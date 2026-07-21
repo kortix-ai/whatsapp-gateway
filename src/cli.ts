@@ -14,6 +14,15 @@ import { basename, extname, resolve } from 'node:path';
 type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
 type Row = Record<string, unknown>;
 
+// Piping into `head`, `less`, or similar closes stdout early. Exit quietly
+// instead of crashing with an unhandled EPIPE, the way standard tools behave.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EPIPE') process.exit(0);
+    throw error;
+  });
+}
+
 /* ------------------------------------------------------------------ parsing */
 
 const argv = process.argv.slice(2);
