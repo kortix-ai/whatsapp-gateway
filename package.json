@@ -50,7 +50,7 @@
     "db:studio": "prisma studio",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm db:generate && tsc --noEmit",
     "lint": "eslint .",
     "e2e": "tsx src/scripts/e2e.ts",
     "smoke:curl": "bash scripts/smoke.sh",
