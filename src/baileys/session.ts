@@ -206,7 +206,6 @@ export class BaileysSession {
           where: { accountId: this.accountId, whatsappMessageId: update.key.id },
           data: {
             ...(update.update.status === undefined || update.update.status === null ? {} : { status: String(update.update.status) }),
-            payload: json(update),
           },
         });
       }

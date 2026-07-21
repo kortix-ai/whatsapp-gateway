@@ -52,6 +52,13 @@ async function main() {
   assert(access.key.startsWith('wag_'), 'API key has the wrong prefix');
   assert(access.scope === 'connection' && access.account_id === account.id, 'Connection key scope is incorrect');
 
+  const tooShortKey = await authenticated('/v1/api-keys', {
+    method: 'POST', body: JSON.stringify({
+      name: 'Too short E2E key', scope: 'connection', account_id: account.id, expires_in_seconds: 3_600,
+    }),
+  });
+  assert(tooShortKey.status === 400, `Sub-day API-key expiry returned ${tooShortKey.status}`);
+
   const mintAccountKey = await authenticated('/v1/api-keys', {
     method: 'POST', body: JSON.stringify({ name: 'E2E account key', scope: 'account' }),
   });

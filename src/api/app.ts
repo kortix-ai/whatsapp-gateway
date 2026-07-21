@@ -26,7 +26,7 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
 }));
 
-app.get('/health', (context) => context.json({ status: 'ok', service: 'whatsapp-gateway' }));
+app.get('/health', (context) => context.json({ status: 'ok', service: 'whatsapp-gateway', release: config.GATEWAY_RELEASE }));
 app.get('/openapi.json', (context) => context.json(openApiDocument));
 app.get('/docs', Scalar({
   url: '/openapi.json',
@@ -184,7 +184,7 @@ app.post('/v1/api-keys', requireAuth(), async (context) => {
     name: z.string().min(1).max(32),
     scope: z.enum(['account', 'connection']).default('connection'),
     account_id: z.string().optional(),
-    expires_in_seconds: z.number().int().positive().max(31_536_000).nullable().optional(),
+    expires_in_seconds: z.number().int().min(86_400).max(31_536_000).nullable().optional(),
     permissions: z.record(z.string(), z.array(z.string())).optional(),
   }).refine((value) => value.scope !== 'connection' || Boolean(value.account_id), 'account_id is required for a connection key'));
   if (input.scope === 'connection') await accountFor(actor, input.account_id!);

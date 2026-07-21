@@ -136,7 +136,7 @@ export const openApiDocument = {
         tags: ['API keys'], summary: 'Create an account- or connection-scoped API key',
         requestBody: jsonBody(object({
           name: { type: 'string' }, scope: { type: 'string', enum: ['account', 'connection'], default: 'connection' },
-          account_id: { type: 'string' }, expires_in_seconds: { type: ['integer', 'null'], maximum: 31_536_000 },
+          account_id: { type: 'string' }, expires_in_seconds: { type: ['integer', 'null'], minimum: 86_400, maximum: 31_536_000 },
           permissions: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } } },
         }, ['name', 'scope'])),
         responses: { '201': { description: 'Plaintext API key returned once' }, '403': { description: 'Owner session required' } },

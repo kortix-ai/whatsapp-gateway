@@ -23,6 +23,7 @@ const schema = z.object({
   ALLOW_PRIVATE_WEBHOOKS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   ALLOW_INSECURE_DEVELOPMENT_DEFAULTS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   LOG_LEVEL: z.string().default('info'),
+  GATEWAY_RELEASE: z.string().default('development'),
 });
 
 const parsed = schema.parse(process.env);

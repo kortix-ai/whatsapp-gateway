@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io docker-compose-v2 awscli git jq
+systemctl enable --now docker
+
+install -d -m 755 /opt/whatsapp-gateway /etc/whatsapp-gateway
+printf '%s' '${secret_arn}' > /etc/whatsapp-gateway/secret-arn
+printf '%s' '${aws_region}' > /etc/whatsapp-gateway/region
+
+if [[ ! -d /opt/whatsapp-gateway/.git ]]; then
+  git clone https://github.com/kortix-ai/whatsapp-gateway.git /opt/whatsapp-gateway
+fi
+
+cd /opt/whatsapp-gateway
+git checkout main
+git pull --ff-only origin main
+chmod +x scripts/deploy-aws.sh scripts/backup-production.sh
+
+for attempt in $(seq 1 30); do
+  if scripts/deploy-aws.sh ghcr.io/kortix-ai/whatsapp-gateway:main; then
+    break
+  fi
+  if [[ "$attempt" == 30 ]]; then
+    exit 1
+  fi
+  sleep 10
+done
+
+printf '%s\n' '15 3 * * * root /opt/whatsapp-gateway/scripts/backup-production.sh >> /var/log/whatsapp-gateway-backup.log 2>&1' \
+  > /etc/cron.d/whatsapp-gateway-backup
+chmod 644 /etc/cron.d/whatsapp-gateway-backup

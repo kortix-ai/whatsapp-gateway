@@ -144,6 +144,76 @@ git pull --ff-only
 
 Back up at minimum the PostgreSQL volume/database and the production `.env`. Losing `ENCRYPTION_KEY` makes stored WhatsApp auth state unrecoverable.
 
+## Kortix hosted deployment
+
+The internal Kortix deployment intentionally stays small: one EC2 instance runs PostgreSQL, the API/UI, one Baileys worker, one webhook worker, and Caddy through Docker Compose. There is no ALB, EKS, RDS, SSH key, or browser fleet.
+
+Production inventory:
+
+| Item | Value |
+| --- | --- |
+| Public URL | <https://wag.kortix.cloud> |
+| AWS account | `935064898258` |
+| AWS region | `us-west-2` |
+| EC2 tag | `Name=whatsapp-gateway` |
+| Runtime directory | `/opt/whatsapp-gateway` |
+| Runtime secret | AWS Secrets Manager `whatsapp-gateway/production` |
+| Backups | `s3://kortix-whatsapp-gateway-backups-935064898258/postgres/` |
+| Terraform state | `s3://kortix-whatsapp-gateway-tfstate-935064898258/wag.kortix.cloud/terraform.tfstate` |
+| Terraform lock table | DynamoDB `kortix-whatsapp-gateway-terraform-locks` |
+| DNS | Cloudflare zone `kortix.cloud`, proxied `wag` A record |
+| Source/image | `kortix-ai/whatsapp-gateway`, `ghcr.io/kortix-ai/whatsapp-gateway` |
+
+Infrastructure lives in `deploy/terraform`. Cloudflare credentials are environment variables only and must never be committed:
+
+```bash
+export CLOUDFLARE_EMAIL=operator@example.com
+export CLOUDFLARE_API_KEY=replace-with-a-rotated-key
+terraform -chdir=deploy/terraform init
+terraform -chdir=deploy/terraform plan
+terraform -chdir=deploy/terraform apply
+terraform -chdir=deploy/terraform output
+```
+
+Every push to `main` builds an immutable `sha-<full-git-sha>` GHCR image. The container workflow assumes the narrowly scoped `whatsapp-gateway-github-deploy` AWS role through GitHub OIDC, invokes the instance through SSM, fast-forwards `/opt/whatsapp-gateway`, pulls that exact image, runs migrations, replaces the services, and verifies that `/health.release` equals the pushed SHA. No long-lived AWS key or inbound SSH port is used.
+
+The repository variables required by the workflow are created after the first Terraform apply:
+
+```bash
+gh variable set AWS_REGION --body us-west-2
+gh variable set AWS_INSTANCE_ID --body "$(terraform -chdir=deploy/terraform output -raw instance_id)"
+gh variable set AWS_DEPLOY_ROLE_ARN --body "$(terraform -chdir=deploy/terraform output -raw github_deploy_role_arn)"
+```
+
+Operate the instance through SSM:
+
+```bash
+aws ssm start-session \
+  --region us-west-2 \
+  --target "$(terraform -chdir=deploy/terraform output -raw instance_id)"
+```
+
+Useful commands on the instance:
+
+```bash
+cd /opt/whatsapp-gateway
+sudo docker compose --env-file .env -f docker-compose.production.yml ps
+sudo docker compose --env-file .env -f docker-compose.production.yml logs --tail=200 api worker webhooks caddy
+sudo scripts/deploy-aws.sh ghcr.io/kortix-ai/whatsapp-gateway:sha-<full-git-sha>
+sudo scripts/backup-production.sh
+```
+
+Daily Postgres dumps run at 03:15 UTC, are uploaded to the private encrypted backup bucket, and expire after 90 days. The instance root disk is encrypted. Application secrets and the database/encryption passwords live in Secrets Manager and encrypted Terraform state; they do not live in git or GitHub Actions.
+
+Rollback is an immutable-image deploy through SSM:
+
+```bash
+sudo /opt/whatsapp-gateway/scripts/deploy-aws.sh \
+  ghcr.io/kortix-ai/whatsapp-gateway:sha-<known-good-full-git-sha>
+```
+
+Restore a database backup only during a maintenance window: stop API/worker/webhook services, download the selected dump from S3, restore it into the Postgres container, then redeploy the same image. Preserve the matching `ENCRYPTION_KEY`; changing or losing it invalidates the stored Baileys session.
+
 ## Private allowlist authentication
 
 Private mode is the default:
@@ -177,6 +247,8 @@ There are two scopes:
 - `account`: accesses every current and future connection owned by the user. Intended for trusted administrative tooling.
 
 Keys use the `wag_` prefix, are hashed at rest, rate-limited, permission-aware, expirable, and revocable. The full key is returned once.
+
+Custom expirations are between 86,400 seconds (one day) and 31,536,000 seconds (one year), or `null` for no expiry.
 
 Create a connection key from the signed-in console or:
 
@@ -358,6 +430,16 @@ Create a webhook with explicit subscriptions:
 
 An empty `event_types` list means every current and future event. An empty `account_ids` list means every tenant connection. A connection-scoped API key is always forced to its assigned connection and can only see/manage endpoints and deliveries for that connection. The UI requires the user to choose all events intentionally.
 
+For a Kortix chat binding, subscribe to all message lifecycle events but trigger a new agent run only for an inbound creation:
+
+```ts
+if (event.type === 'message.created' && event.data.direction === 'inbound') {
+  await triggerAgent(event);
+}
+```
+
+Use `message.updated`, `message.deleted`, `message.media.updated`, `message.reaction.updated`, and `message.receipt.updated` to update the existing bound thread without starting a second run. `command.completed` and `command.failed` report durable outbound action results. There is no wildcard string; `event_types: []` is the explicit all-current-and-future-events subscription.
+
 ### Verify signatures
 
 The signing input is:
@@ -419,6 +501,33 @@ SMOKE_PAIRING=1 pnpm smoke:curl
 E2E_PAIRING=1 pnpm e2e
 docker compose build
 ```
+
+### Real connected-account acceptance
+
+Use a connection-scoped key and the real CLI. Sending to the connected account's own phone number is the safe mutation test:
+
+```bash
+export WHATSAPP_GATEWAY_URL=https://wag.kortix.cloud
+export WHATSAPP_GATEWAY_API_KEY=wag_secret
+
+account_id="$(wag accounts list --json | jq -r '.data[0].id')"
+phone="$(wag accounts list --json | jq -r '.data[0].phoneNumber')"
+
+wag auth status --json
+wag accounts status "$account_id" --json
+wag chats list "$account_id" --unread --json
+wag messages list "$account_id" --limit 5 --json
+wag groups list "$account_id" --json
+wag actions list --category privacy --json
+wag events tail "$account_id" --type message.created --once
+wag messages send "$account_id" \
+  --to "$phone" \
+  --text "WAG production self-test $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --idempotency-key "production-self-test-$(date -u +%Y%m%dT%H%M%SZ)" \
+  --json
+```
+
+For webhook acceptance, use a temporary receiver owned by the operator, subscribe to `command.completed`, run the self-message above, and verify `timestamp + "." + raw_body` with the one-time secret. Delete the endpoint afterward. A real inbound `message.created` acceptance requires a message sent to the connected number from another WhatsApp account; do not fake inbound direction from an outbound command.
 
 ## Project layout
 

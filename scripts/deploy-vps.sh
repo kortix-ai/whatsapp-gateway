@@ -23,7 +23,8 @@ if grep -q 'replace-with' .env; then
   exit 1
 fi
 
-docker compose --env-file .env -f docker-compose.production.yml up -d --build --remove-orphans --wait
+docker compose --env-file .env -f docker-compose.production.yml pull
+docker compose --env-file .env -f docker-compose.production.yml up -d --remove-orphans --wait
 docker compose --env-file .env -f docker-compose.production.yml ps
 
 domain="$(sed -n 's/^DOMAIN=//p' .env | tail -1)"
