@@ -1,0 +1,4 @@
+interface:
+  display_name: "WhatsApp Gateway"
+  short_description: "Operate connected WhatsApp accounts safely"
+  default_prompt: "Use $whatsapp-gateway to inspect chats and send or manage WhatsApp messages through my scoped gateway key."

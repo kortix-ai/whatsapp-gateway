@@ -1,0 +1,29 @@
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { buildAgentSkill } from './skill.js';
+
+describe('agent skill', () => {
+  it('serves a generic skill without credentials', () => {
+    const skill = buildAgentSkill();
+    expect(skill).toContain('name: whatsapp-gateway');
+    expect(skill).not.toContain("export WHATSAPP_GATEWAY_API_KEY='");
+  });
+
+  it('creates a personalized one-time skill', () => {
+    expect(buildAgentSkill('wag_test')).toContain("export WHATSAPP_GATEWAY_API_KEY='wag_test'");
+  });
+
+  it('documents every custom v1 REST route', () => {
+    const source = readFileSync(fileURLToPath(new URL('./api/app.ts', import.meta.url)), 'utf8');
+    const staticSkill = readFileSync(fileURLToPath(new URL('../skills/whatsapp-gateway/SKILL.md', import.meta.url)), 'utf8');
+    const routes = [...source.matchAll(/app\.(?:get|post|patch|delete)\('(\/v1\/[^']+)'/g)]
+      .map((match) => match[1]?.replace(/:([A-Za-z]+)/g, '{$1}'))
+      .filter((route): route is string => Boolean(route));
+    const skill = buildAgentSkill();
+    for (const route of routes) {
+      expect(skill, `generated skill missing ${route}`).toContain(route);
+      expect(staticSkill, `installable skill missing ${route}`).toContain(route);
+    }
+  });
+});

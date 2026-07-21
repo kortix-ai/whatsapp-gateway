@@ -1,0 +1,348 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  tenant        Tenant?
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model Apikey {
+  id                  String    @id
+  configId            String    @default("default")
+  name                String?
+  start               String?
+  prefix              String?
+  key                 String
+  referenceId         String
+  refillInterval      Int?
+  refillAmount        Int?
+  lastRefillAt        DateTime?
+  enabled             Boolean?  @default(true)
+  rateLimitEnabled    Boolean?  @default(true)
+  rateLimitTimeWindow Int?      @default(60000)
+  rateLimitMax        Int?      @default(600)
+  requestCount        Int?      @default(0)
+  remaining           Int?
+  lastRequest         DateTime?
+  expiresAt           DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  permissions         String?
+  metadata            String?
+
+  @@index([configId])
+  @@index([referenceId])
+  @@index([key])
+  @@map("apikey")
+}
+
+model Tenant {
+  id          String            @id
+  ownerUserId String            @unique
+  name        String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  owner       User              @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  waAccounts  WhatsAppAccount[]
+  events      InboundEvent[]
+  commands    OutboundCommand[]
+  webhooks    WebhookEndpoint[]
+  auditLog    AuditLog[]
+
+  @@map("tenants")
+}
+
+model WhatsAppAccount {
+  id               String                  @id
+  tenantId         String
+  displayName      String
+  phoneNumber      String?
+  whatsappJid      String?
+  status           String                  @default("disconnected")
+  pairingMode      String?
+  pairingCode      String?
+  pairingQr        String?
+  pairingExpiresAt DateTime?
+  lastConnectedAt  DateTime?
+  lastError        String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  tenant           Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lease            WhatsAppAccountLease?
+  authCredentials  WhatsAppAuthCredential?
+  signalKeys       WhatsAppSignalKey[]
+  chats            WhatsAppChat[]
+  contacts         WhatsAppContact[]
+  groups           WhatsAppGroup[]
+  messages         WhatsAppMessage[]
+  eventSequence    AccountEventSequence?
+  events           InboundEvent[]
+  commands         OutboundCommand[]
+
+  @@index([tenantId])
+  @@map("whatsapp_accounts")
+}
+
+model WhatsAppAccountLease {
+  accountId   String          @id
+  workerId    String
+  leasedUntil DateTime
+  heartbeatAt DateTime        @default(now())
+  generation  Int             @default(1)
+  account     WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([leasedUntil])
+  @@map("whatsapp_account_leases")
+}
+
+model WhatsAppAuthCredential {
+  accountId            String          @id
+  encryptedCredentials String
+  version              Int             @default(1)
+  updatedAt            DateTime        @updatedAt
+  account              WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_auth_credentials")
+}
+
+model WhatsAppSignalKey {
+  accountId      String
+  keyType        String
+  keyId          String
+  encryptedValue String
+  updatedAt      DateTime        @updatedAt
+  account        WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, keyType, keyId])
+  @@map("whatsapp_signal_keys")
+}
+
+model WhatsAppChat {
+  accountId   String
+  jid         String
+  name        String?
+  unreadCount Int             @default(0)
+  archived    Boolean         @default(false)
+  metadata    Json            @default("{}")
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  account     WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, jid])
+  @@map("whatsapp_chats")
+}
+
+model WhatsAppContact {
+  accountId   String
+  jid         String
+  name        String?
+  notify      String?
+  phoneNumber String?
+  metadata    Json            @default("{}")
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  account     WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, jid])
+  @@map("whatsapp_contacts")
+}
+
+model WhatsAppGroup {
+  accountId    String
+  jid          String
+  subject      String
+  ownerJid     String?
+  participants Json            @default("[]")
+  metadata     Json            @default("{}")
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  account      WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, jid])
+  @@map("whatsapp_groups")
+}
+
+model WhatsAppMessage {
+  id                String          @id
+  accountId         String
+  whatsappMessageId String?
+  chatJid           String
+  senderJid         String?
+  direction         String
+  messageType       String
+  text              String?
+  payload           Json            @default("{}")
+  status            String          @default("received")
+  messageTimestamp  DateTime        @default(now())
+  createdAt         DateTime        @default(now())
+  account           WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, whatsappMessageId])
+  @@index([accountId, chatJid, messageTimestamp])
+  @@map("whatsapp_messages")
+}
+
+model AccountEventSequence {
+  accountId String          @id
+  sequence  BigInt          @default(0)
+  account   WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("account_event_sequences")
+}
+
+model InboundEvent {
+  id         String            @id
+  tenantId   String
+  accountId  String
+  sequence   BigInt
+  type       String
+  data       Json
+  occurredAt DateTime          @default(now())
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account    WhatsAppAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@unique([accountId, sequence])
+  @@index([tenantId, occurredAt])
+  @@map("inbound_events")
+}
+
+model OutboundCommand {
+  id           String          @id
+  tenantId     String
+  accountId    String
+  type         String
+  payload      Json
+  status       String          @default("pending")
+  result       Json?
+  error        String?
+  attemptCount Int             @default(0)
+  availableAt  DateTime        @default(now())
+  claimedBy    String?
+  claimedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account      WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, status, availableAt])
+  @@map("outbound_commands")
+}
+
+model WebhookEndpoint {
+  id          String            @id
+  tenantId    String
+  url         String
+  secret      String
+  description String?
+  enabled     Boolean           @default(true)
+  eventTypes  String[]          @default([])
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+
+  @@index([tenantId])
+  @@map("webhook_endpoints")
+}
+
+model WebhookDelivery {
+  id             String          @id
+  endpointId     String
+  eventId        String
+  status         String          @default("pending")
+  attemptCount   Int             @default(0)
+  nextAttemptAt  DateTime        @default(now())
+  lastStatusCode Int?
+  lastResponse   String?
+  lastError      String?
+  deliveredAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  endpoint       WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  event          InboundEvent    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([endpointId, eventId])
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
+}
+
+model AuditLog {
+  id           String   @id
+  tenantId     String
+  actorType    String
+  actorId      String
+  action       String
+  resourceType String
+  resourceId   String?
+  data         Json     @default("{}")
+  createdAt    DateTime @default(now())
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@map("audit_log")
+}

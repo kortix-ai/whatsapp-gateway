@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: whatsapp_gateway
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "54329:5432"
+    volumes:
+      - gateway-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d whatsapp_gateway"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    build: .
+    command: ["pnpm", "prisma", "migrate", "deploy"]
+    environment: &gateway-env
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/whatsapp_gateway
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-secret-change-me-123456}
+      BETTER_AUTH_URL: http://localhost:8080
+      PUBLIC_BASE_URL: http://localhost:8080
+      WEB_ORIGIN: http://localhost:8080
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      ALLOW_INSECURE_DEVELOPMENT_DEFAULTS: ${ALLOW_INSECURE_DEVELOPMENT_DEFAULTS:-true}
+      PAIRING_TTL_SECONDS: ${PAIRING_TTL_SECONDS:-300}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment:
+      <<: *gateway-env
+      RUNTIME_ROLE: api
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build: .
+    environment:
+      <<: *gateway-env
+      RUNTIME_ROLE: worker
+      WORKER_CAPACITY: 25
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  webhooks:
+    build: .
+    environment:
+      <<: *gateway-env
+      RUNTIME_ROLE: webhooks
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  gateway-postgres:
