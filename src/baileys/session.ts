@@ -19,6 +19,7 @@ import { logger } from '../logger.js';
 import { emitEvent } from '../services/events.js';
 import { createPostgresAuthState } from './auth-state.js';
 import { baileysActions, isBaileysAction } from './actions.js';
+import { resetReconnectBackoff, scheduleReconnect } from '../worker/reconnect.js';
 
 function json(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value, BufferJSON.replacer)) as Prisma.InputJsonValue;
@@ -75,6 +76,7 @@ export class BaileysSession {
   private commandInFlight = false;
   private pairingTimer: NodeJS.Timeout | null = null;
   private pairingTransportReady = false;
+  private stableConnectionTimer: NodeJS.Timeout | null = null;
   private readonly log;
 
   constructor(
@@ -110,7 +112,7 @@ export class BaileysSession {
 
     await prisma.whatsAppAccount.update({
       where: { id: this.accountId },
-      data: { status: 'connecting', lastError: null },
+      data: { status: 'connecting', nextConnectAt: null, lastConnectAttemptAt: new Date() },
     });
 
     this.socket.ev.on('creds.update', async () => {
@@ -144,9 +146,15 @@ export class BaileysSession {
             pairingCode: null,
             pairingExpiresAt: null,
             lastConnectedAt: new Date(),
+            nextConnectAt: null,
             lastError: null,
           },
         });
+        this.stableConnectionTimer = setTimeout(
+          () => void resetReconnectBackoff(this.accountId).catch((error) => this.log.error({ error }, 'Failed to reset reconnect backoff')),
+          config.RECONNECT_STABLE_SECONDS * 1_000,
+        );
+        this.stableConnectionTimer.unref();
         await emitEvent(this.accountId, 'connection.opened', { jid: me?.id, name: me?.name });
         void this.syncAllGroups();
       }
@@ -154,14 +162,19 @@ export class BaileysSession {
         const code = disconnectCode(update.lastDisconnect?.error);
         const loggedOut = code === DisconnectReason.loggedOut;
         if (loggedOut) await authState.clear();
-        await prisma.whatsAppAccount.update({
-          where: { id: this.accountId },
-          data: {
-            status: loggedOut ? 'disconnected' : 'reconnecting',
-            lastError: update.lastDisconnect?.error?.message ?? `Connection closed (${code ?? 'unknown'})`,
-            ...(loggedOut ? { pairingMode: null, pairingQr: null, pairingCode: null, pairingExpiresAt: null } : {}),
-          },
-        });
+        const message = update.lastDisconnect?.error?.message ?? `Connection closed (${code ?? 'unknown'})`;
+        if (loggedOut) {
+          await prisma.whatsAppAccount.update({
+            where: { id: this.accountId },
+            data: {
+              status: 'disconnected', reconnectAttempt: 0, nextConnectAt: null, lastError: message,
+              pairingMode: null, pairingQr: null, pairingCode: null, pairingExpiresAt: null,
+            },
+          });
+        } else {
+          const retry = await scheduleReconnect(this.accountId, message);
+          this.log.warn({ ...retry }, 'Scheduled WhatsApp reconnect');
+        }
         await emitEvent(this.accountId, 'connection.closed', { code, logged_out: loggedOut });
         await this.stop(false);
       }
@@ -304,6 +317,7 @@ export class BaileysSession {
     this.stopped = true;
     if (this.commandTimer) clearInterval(this.commandTimer);
     if (this.pairingTimer) clearTimeout(this.pairingTimer);
+    if (this.stableConnectionTimer) clearTimeout(this.stableConnectionTimer);
     this.socket?.ws.close();
     this.socket = null;
     if (notify) this.onClosed(this.accountId);
@@ -317,7 +331,8 @@ export class BaileysSession {
       where: { id: this.accountId, status: { not: 'connected' } },
       data: {
         status: 'disconnected', pairingMode: null, pairingQr: null, pairingCode: null,
-        pairingExpiresAt: null, lastError: 'Pairing expired; start pairing again',
+        pairingExpiresAt: null, reconnectAttempt: 0, nextConnectAt: null,
+        lastError: 'Pairing expired; start pairing again',
       },
     });
     await emitEvent(this.accountId, 'pairing.expired', {});

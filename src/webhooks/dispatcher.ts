@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { fetch, type RequestInit } from 'undici';
 import { config } from '../config.js';
 import { decryptJson, signWebhook } from '../crypto.js';
@@ -5,39 +6,87 @@ import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
 import { createWebhookAgent, validateWebhookUrl } from './url-security.js';
 
+const DELIVERY_LEASE_MS = 120_000;
+
+export function webhookBackoffMs(attempt: number, random = Math.random): number {
+  const exponential = Math.min(3_600_000, 1_000 * 2 ** Math.min(Math.max(attempt - 1, 0), 12));
+  return exponential + Math.floor(random() * Math.max(250, exponential * 0.2));
+}
+
+export async function claimWebhookDelivery() {
+  const claimed = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH candidate AS (
+      SELECT id
+      FROM "webhook_deliveries"
+      WHERE status IN ('pending', 'retrying')
+        AND "nextAttemptAt" <= NOW()
+      ORDER BY "nextAttemptAt" ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT 1
+    )
+    UPDATE "webhook_deliveries" AS delivery
+    SET status = 'processing',
+        "attemptCount" = delivery."attemptCount" + 1,
+        "updatedAt" = NOW()
+    FROM candidate
+    WHERE delivery.id = candidate.id
+    RETURNING delivery.id
+  `);
+  if (!claimed[0]) return null;
+  return prisma.webhookDelivery.findUnique({
+    where: { id: claimed[0].id },
+    include: { endpoint: true, event: true },
+  });
+}
+
 export class WebhookDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
+  private tickRunning = false;
+  private active = 0;
+  private readonly deliveries = new Set<Promise<void>>();
 
   start() {
-    logger.info('Starting webhook delivery worker');
-    void this.tick();
-    this.timer = setInterval(() => void this.tick(), config.WEBHOOK_POLL_INTERVAL_MS);
+    logger.info({ concurrency: config.WEBHOOK_CONCURRENCY }, 'Starting webhook delivery worker');
+    this.runTick();
+    this.timer = setInterval(() => this.runTick(), config.WEBHOOK_POLL_INTERVAL_MS);
   }
 
-  stop() {
+  async stop() {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    await Promise.allSettled(this.deliveries);
+  }
+
+  private runTick() {
+    void this.tick().catch((error) => logger.error({ error }, 'Webhook dispatcher tick failed'));
   }
 
   private async tick() {
-    if (this.stopped) return;
-    await prisma.webhookDelivery.updateMany({
-      where: { status: 'processing', updatedAt: { lt: new Date(Date.now() - 120_000) } },
-      data: { status: 'retrying', nextAttemptAt: new Date(), lastError: 'Delivery worker lease expired' },
-    });
-    const delivery = await prisma.webhookDelivery.findFirst({
-      where: { status: { in: ['pending', 'retrying'] }, nextAttemptAt: { lte: new Date() } },
-      orderBy: { nextAttemptAt: 'asc' },
-      include: { endpoint: true, event: true },
-    });
-    if (!delivery) return;
-    const claimed = await prisma.webhookDelivery.updateMany({
-      where: { id: delivery.id, status: { in: ['pending', 'retrying'] } },
-      data: { status: 'processing', attemptCount: { increment: 1 } },
-    });
-    if (!claimed.count) return;
+    if (this.stopped || this.tickRunning) return;
+    this.tickRunning = true;
+    try {
+      await prisma.webhookDelivery.updateMany({
+        where: { status: 'processing', updatedAt: { lt: new Date(Date.now() - DELIVERY_LEASE_MS) } },
+        data: { status: 'retrying', nextAttemptAt: new Date(), lastError: 'Delivery worker lease expired' },
+      });
+      while (!this.stopped && this.active < config.WEBHOOK_CONCURRENCY) {
+        const delivery = await claimWebhookDelivery();
+        if (!delivery) break;
+        this.active += 1;
+        const task = this.deliver(delivery).finally(() => {
+          this.active -= 1;
+          this.deliveries.delete(task);
+          if (!this.stopped) queueMicrotask(() => this.runTick());
+        });
+        this.deliveries.add(task);
+      }
+    } finally {
+      this.tickRunning = false;
+    }
+  }
 
+  private async deliver(delivery: NonNullable<Awaited<ReturnType<typeof claimWebhookDelivery>>>) {
     const eventBody = {
       id: delivery.event.id,
       tenant_id: delivery.event.tenantId,
@@ -74,26 +123,21 @@ export class WebhookDispatcher {
         await prisma.webhookDelivery.update({
           where: { id: delivery.id },
           data: {
-            status: 'delivered',
-            deliveredAt: new Date(),
-            lastStatusCode: response.status,
-            lastResponse: responseBody,
-            lastError: null,
+            status: 'delivered', deliveredAt: new Date(), lastStatusCode: response.status,
+            lastResponse: responseBody, lastError: null,
           },
         });
         return;
       }
       throw new Error(`Webhook returned HTTP ${response.status}: ${responseBody}`);
     } catch (error) {
-      const attempts = delivery.attemptCount + 1;
+      const attempts = delivery.attemptCount;
       const dead = attempts >= config.WEBHOOK_MAX_ATTEMPTS;
-      const backoffMs = Math.min(3_600_000, 1_000 * 2 ** Math.min(attempts - 1, 12));
-      const jitter = Math.floor(Math.random() * Math.max(250, backoffMs * 0.2));
       await prisma.webhookDelivery.update({
         where: { id: delivery.id },
         data: {
           status: dead ? 'dead_letter' : 'retrying',
-          nextAttemptAt: new Date(Date.now() + backoffMs + jitter),
+          nextAttemptAt: new Date(Date.now() + webhookBackoffMs(attempts)),
           lastError: error instanceof Error ? error.message : String(error),
         },
       });

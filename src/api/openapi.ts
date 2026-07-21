@@ -81,7 +81,10 @@ export const openApiDocument = {
   security: [{ apiKey: [] }, { session: [] }],
   paths: {
     '/health': {
-      get: { tags: ['System'], summary: 'Health check', security: [], responses: { '200': { description: 'Gateway is healthy' } } },
+      get: { tags: ['System'], summary: 'Process liveness check', security: [], responses: { '200': { description: 'Gateway process is alive' } } },
+    },
+    '/health/ready': {
+      get: { tags: ['System'], summary: 'Database readiness check', security: [], responses: { '200': { description: 'Gateway and PostgreSQL are ready' }, '503': { description: 'PostgreSQL is unavailable' } } },
     },
     '/openapi.json': {
       get: { tags: ['System'], summary: 'OpenAPI 3.1 document', security: [], responses: { '200': { description: 'OpenAPI JSON' } } },

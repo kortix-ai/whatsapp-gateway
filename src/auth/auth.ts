@@ -28,6 +28,12 @@ export const auth = betterAuth({
   secret: config.BETTER_AUTH_SECRET,
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
   trustedOrigins: [config.WEB_ORIGIN, config.PUBLIC_BASE_URL],
+  advanced: {
+    ipAddress: {
+      ipAddressHeaders: ['x-forwarded-for'],
+      trustedProxies: config.trustedProxyCidrs,
+    },
+  },
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 10,

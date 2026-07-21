@@ -86,20 +86,23 @@ resource "aws_secretsmanager_secret" "gateway" {
 resource "aws_secretsmanager_secret_version" "gateway" {
   secret_id = aws_secretsmanager_secret.gateway.id
   secret_string = jsonencode({
-    DOMAIN                 = var.domain
-    POSTGRES_DB            = "whatsapp_gateway"
-    POSTGRES_USER          = "whatsapp_gateway"
-    POSTGRES_PASSWORD      = random_password.postgres.result
-    DATABASE_URL           = "postgresql://whatsapp_gateway:${random_password.postgres.result}@postgres:5432/whatsapp_gateway"
-    BETTER_AUTH_SECRET     = random_password.better_auth.result
-    ENCRYPTION_KEY         = random_id.encryption.b64_std
-    AUTH_ALLOWLIST_ENABLED = "true"
-    ALLOWED_EMAILS         = var.allowed_emails
-    WORKER_CAPACITY        = "25"
-    PAIRING_TTL_SECONDS    = "300"
-    WEBHOOK_MAX_ATTEMPTS   = "12"
-    AWS_REGION             = var.aws_region
-    AWS_BACKUP_BUCKET      = aws_s3_bucket.backups.id
+    DOMAIN                   = var.domain
+    POSTGRES_DB              = "whatsapp_gateway"
+    POSTGRES_USER            = "whatsapp_gateway"
+    POSTGRES_PASSWORD        = random_password.postgres.result
+    DATABASE_URL             = "postgresql://whatsapp_gateway:${random_password.postgres.result}@postgres:5432/whatsapp_gateway"
+    BETTER_AUTH_SECRET       = random_password.better_auth.result
+    ENCRYPTION_KEY           = random_id.encryption.b64_std
+    AUTH_ALLOWLIST_ENABLED   = "true"
+    ALLOWED_EMAILS           = var.allowed_emails
+    TRUSTED_PROXY_CIDRS      = join(",", var.trusted_proxy_cidrs)
+    WORKER_CAPACITY          = "25"
+    RECONNECT_STABLE_SECONDS = "300"
+    PAIRING_TTL_SECONDS      = "300"
+    WEBHOOK_MAX_ATTEMPTS     = "12"
+    WEBHOOK_CONCURRENCY      = "10"
+    AWS_REGION               = var.aws_region
+    AWS_BACKUP_BUCKET        = aws_s3_bucket.backups.id
   })
 }
 

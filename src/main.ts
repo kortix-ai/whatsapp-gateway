@@ -37,7 +37,7 @@ if (config.RUNTIME_ROLE === 'webhooks' || config.RUNTIME_ROLE === 'all') dispatc
 async function shutdown(signal: string) {
   logger.info({ signal }, 'Shutting down');
   server?.close();
-  dispatcher?.stop();
+  await dispatcher?.stop();
   await supervisor?.stop();
   await prisma.$disconnect();
   process.exit(0);

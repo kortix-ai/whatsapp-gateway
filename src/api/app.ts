@@ -29,6 +29,15 @@ app.use('*', cors({
 }));
 
 app.get('/health', (context) => context.json({ status: 'ok', service: 'whatsapp-gateway', release: config.GATEWAY_RELEASE }));
+app.get('/health/ready', async (context) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    return context.json({ status: 'ready', service: 'whatsapp-gateway', release: config.GATEWAY_RELEASE });
+  } catch (error) {
+    logger.error({ error }, 'Readiness check failed');
+    return context.json({ status: 'not_ready', service: 'whatsapp-gateway', release: config.GATEWAY_RELEASE }, 503);
+  }
+});
 app.get('/openapi.json', (context) => context.json(openApiDocument));
 app.get('/docs', Scalar({
   url: '/openapi.json',
@@ -275,6 +284,9 @@ app.get('/v1/accounts/:accountId/status', requireAuth({ resource: 'accounts', ac
     pairing_expires_at: account.pairingExpiresAt,
     ...(mayPair ? { qr_data_url: account.pairingQr, pairing_code: account.pairingCode } : {}),
     last_connected_at: account.lastConnectedAt,
+    last_connect_attempt_at: account.lastConnectAttemptAt,
+    next_connect_at: account.nextConnectAt,
+    reconnect_attempt: account.reconnectAttempt,
     last_error: account.lastError,
   });
 });
@@ -292,6 +304,7 @@ app.post('/v1/accounts/:accountId/pair/qr', requireAuth({ resource: 'accounts', 
       where: { id: account.id },
       data: {
         status: 'connecting', pairingMode: 'qr', pairingQr: null, pairingCode: null, lastError: null,
+        reconnectAttempt: 0, nextConnectAt: null,
         pairingExpiresAt: new Date(Date.now() + config.PAIRING_TTL_SECONDS * 1000),
       },
     });
@@ -315,6 +328,7 @@ app.post('/v1/accounts/:accountId/pair/code', requireAuth({ resource: 'accounts'
     where: { id: account.id },
     data: {
       status: 'connecting', pairingMode: 'code', phoneNumber, pairingCode: null, pairingQr: null, lastError: null,
+      reconnectAttempt: 0, nextConnectAt: null,
       pairingExpiresAt: new Date(Date.now() + config.PAIRING_TTL_SECONDS * 1000),
     },
   });

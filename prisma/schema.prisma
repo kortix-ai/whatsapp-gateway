@@ -116,33 +116,37 @@ model Tenant {
 }
 
 model WhatsAppAccount {
-  id               String                  @id
-  tenantId         String
-  displayName      String
-  phoneNumber      String?
-  whatsappJid      String?
-  status           String                  @default("disconnected")
-  pairingMode      String?
-  pairingCode      String?
-  pairingQr        String?
-  pairingExpiresAt DateTime?
-  lastConnectedAt  DateTime?
-  lastError        String?
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @updatedAt
-  tenant           Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  lease            WhatsAppAccountLease?
-  authCredentials  WhatsAppAuthCredential?
-  signalKeys       WhatsAppSignalKey[]
-  chats            WhatsAppChat[]
-  contacts         WhatsAppContact[]
-  groups           WhatsAppGroup[]
-  messages         WhatsAppMessage[]
-  eventSequence    AccountEventSequence?
-  events           InboundEvent[]
-  commands         OutboundCommand[]
+  id                   String                  @id
+  tenantId             String
+  displayName          String
+  phoneNumber          String?
+  whatsappJid          String?
+  status               String                  @default("disconnected")
+  pairingMode          String?
+  pairingCode          String?
+  pairingQr            String?
+  pairingExpiresAt     DateTime?
+  lastConnectedAt      DateTime?
+  lastConnectAttemptAt DateTime?
+  nextConnectAt        DateTime?
+  reconnectAttempt     Int                     @default(0)
+  lastError            String?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  tenant               Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lease                WhatsAppAccountLease?
+  authCredentials      WhatsAppAuthCredential?
+  signalKeys           WhatsAppSignalKey[]
+  chats                WhatsAppChat[]
+  contacts             WhatsAppContact[]
+  groups               WhatsAppGroup[]
+  messages             WhatsAppMessage[]
+  eventSequence        AccountEventSequence?
+  events               InboundEvent[]
+  commands             OutboundCommand[]
 
   @@index([tenantId])
+  @@index([status, nextConnectAt])
   @@map("whatsapp_accounts")
 }
 
@@ -271,27 +275,27 @@ model InboundEvent {
 }
 
 model OutboundCommand {
-  id           String          @id
-  tenantId     String
-  accountId    String
-  type         String
+  id             String          @id
+  tenantId       String
+  accountId      String
+  type           String
   idempotencyKey String?
-  payload      Json
-  status       String          @default("pending")
-  result       Json?
-  error        String?
-  attemptCount Int             @default(0)
-  availableAt  DateTime        @default(now())
-  claimedBy    String?
-  claimedAt    DateTime?
-  completedAt  DateTime?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  account      WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  payload        Json
+  status         String          @default("pending")
+  result         Json?
+  error          String?
+  attemptCount   Int             @default(0)
+  availableAt    DateTime        @default(now())
+  claimedBy      String?
+  claimedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account        WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-  @@index([accountId, status, availableAt])
   @@unique([tenantId, idempotencyKey])
+  @@index([accountId, status, availableAt])
   @@map("outbound_commands")
 }
 

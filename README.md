@@ -52,6 +52,8 @@ socket    socket     socket
 
 One phone number is one Baileys WebSocket session, not one container. A worker multiplexes multiple sessions; the default capacity is 25. Add worker replicas to add active-session capacity. PostgreSQL leases ensure only one worker owns each connection.
 
+Run every replica for a deployment against the same PostgreSQL database. Never copy a live account's auth/Signal rows into a second running deployment: database leases cannot coordinate across independent databases, and WhatsApp will replace the competing linked-device socket.
+
 ## Requirements
 
 - An existing WhatsApp account on a phone.
@@ -128,6 +130,8 @@ The production stack:
 - Uses Caddy for automatic TLS certificates and security headers.
 - Persists PostgreSQL and Caddy data in named volumes.
 - Restarts long-running services automatically.
+
+If a CDN or reverse proxy sits in front of Caddy, set `TRUSTED_PROXY_CIDRS` to its exact published IP/CIDR ranges so Better Auth can rate-limit real client addresses through `X-Forwarded-For`. Leave it empty for direct-origin deployments. Never trust `0.0.0.0/0`, `::/0`, or a client-controlled IP header.
 
 The public container is also available as:
 
@@ -487,15 +491,21 @@ Give an agent the generic skill and a connection-scoped key through a secure sec
 
 ## Scaling
 
-The default worker capacity is 25 concurrent phone sessions. The formula is approximately:
+The default worker capacity is 25 concurrent phone sessions. Workers use renewable PostgreSQL leases, persisted reconnect scheduling with exponential backoff and jitter, and non-overlapping schedulers. Webhook replicas atomically claim deliveries and process 10 concurrently by default.
+
+The approximate socket ceiling configured by the operator is:
 
 ```text
 active capacity = worker replicas × WORKER_CAPACITY
 ```
 
-Start conservatively, measure actual RAM/CPU/network use, and keep headroom. Production scale also requires PostgreSQL connection planning, message/event retention, metrics, backups, and account-health monitoring.
+This is a capacity formula, not a promise that WhatsApp permits or reliably supports a given usage pattern. The current single-EC2 Kortix deployment is intentionally a private/small deployment, not a high-availability cluster.
 
-Baileys protocol compatibility and WhatsApp account policy are operational constraints independent of infrastructure capacity.
+Do **not** add rotating residential proxies or browser-fingerprint spoofing. Baileys has no browser to fingerprint: it speaks the linked-device protocol directly over WebSocket. Proxy rotation adds disconnects, latency, another credential-exposure boundary, and policy/evasion risk. If a legitimate deployment needs network isolation, use stable dedicated egress per worker shard/region.
+
+For thousands of commercial managed numbers, use the official [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api/overview) as the primary product foundation. Meta describes it as the API built and automatically scaled for business messaging. Keep Baileys for explicitly opt-in linked devices where its broader personal-client surface is actually required and the operator accepts unofficial-protocol compatibility and enforcement risk.
+
+See [SCALING.md](SCALING.md) for practical tiers, the production reference architecture, retention/observability requirements, and the Baileys-versus-Cloud-API decision.
 
 ## Source development
 

@@ -99,6 +99,8 @@ One Docker image supports four roles:
 
 - Acquires renewable per-account leases.
 - Opens and owns long-lived Baileys sessions.
+- Persists exponential reconnect backoff with jitter across restarts and lease handoffs.
+- Prevents overlapping supervisor polls and lease heartbeats.
 - Persists auth changes and synchronized WhatsApp state.
 - Claims and executes durable commands.
 - Emits normalized durable events.
@@ -106,6 +108,7 @@ One Docker image supports four roles:
 ### Webhook worker
 
 - Claims pending/retrying deliveries.
+- Uses PostgreSQL `FOR UPDATE SKIP LOCKED` claims and configurable parallel delivery.
 - Revalidates DNS and blocks unsafe destinations.
 - Signs requests with HMAC-SHA256.
 - Retries with backoff/jitter.
@@ -128,7 +131,7 @@ Better Auth:
 Gateway:
 
 - `Tenant`: owner-backed workspace.
-- `WhatsAppAccount`: named connection, phone/JID, status, pairing state, timestamps, errors.
+- `WhatsAppAccount`: named connection, phone/JID, status, pairing state, timestamps, errors, and durable reconnect scheduling.
 - `WhatsAppAccountLease`: worker ownership and expiry.
 - `WhatsAppAuthCredential`: encrypted Baileys credentials.
 - `WhatsAppSignalKey`: encrypted per-key Signal state.
@@ -143,7 +146,7 @@ Gateway:
 - `WebhookDelivery`: attempts, response/error state, retry/dead-letter state.
 - `AuditLog`: actor/resource/action history.
 
-Six migrations currently deploy the schema, pairing expiry, idempotency, pairing-event secret scrubbing, and webhook connection scope.
+Seven migrations currently deploy the schema, pairing expiry, idempotency, pairing-event secret scrubbing, webhook connection scope, and connection backoff scheduling.
 
 ## 6. Authentication, allowlist, and API keys
 
@@ -567,6 +570,7 @@ The `v0.1.0` GitHub release carries an npm-compatible prebuilt `wag` package and
 ## 21. Source-of-truth file map
 
 - `README.md`: public operator/developer guide.
+- `SCALING.md`: scale tiers, target topology, capacity testing, and network/policy boundaries.
 - `STATUS_QUO.md`: this engineering/design handoff.
 - `package.json`: package, scripts, and `wag` bin.
 - `docker-compose.yml`: local runtime.

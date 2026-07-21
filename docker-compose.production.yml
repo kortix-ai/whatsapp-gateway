@@ -7,11 +7,14 @@ x-gateway-environment: &gateway-environment
   BETTER_AUTH_URL: https://${DOMAIN}
   PUBLIC_BASE_URL: https://${DOMAIN}
   WEB_ORIGIN: https://${DOMAIN}
+  TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
   ENCRYPTION_KEY: ${ENCRYPTION_KEY}
   AUTH_ALLOWLIST_ENABLED: ${AUTH_ALLOWLIST_ENABLED:-true}
   ALLOWED_EMAILS: ${ALLOWED_EMAILS:-marko@kortix.ai}
   WORKER_CAPACITY: ${WORKER_CAPACITY:-25}
+  RECONNECT_STABLE_SECONDS: ${RECONNECT_STABLE_SECONDS:-300}
   PAIRING_TTL_SECONDS: ${PAIRING_TTL_SECONDS:-300}
+  WEBHOOK_CONCURRENCY: ${WEBHOOK_CONCURRENCY:-10}
   WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-12}
   GATEWAY_RELEASE: ${GATEWAY_RELEASE:-unknown}
 
@@ -51,7 +54,7 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 20
