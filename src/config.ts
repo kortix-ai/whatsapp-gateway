@@ -20,6 +20,9 @@ const schema = z.object({
   LEASE_HEARTBEAT_SECONDS: z.coerce.number().int().min(3).default(10),
   RECONNECT_STABLE_SECONDS: z.coerce.number().int().min(10).default(300),
   SYNC_FULL_HISTORY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  // Route the Baileys socket + media through a proxy so WhatsApp sees a residential
+  // exit IP instead of the datacenter. Empty = direct. http(s):// or socks5://.
+  WA_PROXY_URL: z.string().optional().transform((value) => value?.trim() || undefined),
   PAIRING_TTL_SECONDS: z.coerce.number().int().min(60).default(300),
   WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(1000),
   WEBHOOK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
@@ -31,6 +34,12 @@ const schema = z.object({
 });
 
 const parsed = schema.parse(process.env);
+if (parsed.WA_PROXY_URL) {
+  const scheme = new URL(parsed.WA_PROXY_URL).protocol.replace(':', '').toLowerCase();
+  if (!['http', 'https', 'socks', 'socks4', 'socks5'].includes(scheme)) {
+    throw new Error(`WA_PROXY_URL scheme must be http, https, or socks5 (got ${scheme})`);
+  }
+}
 const encryptionKey = Buffer.from(parsed.ENCRYPTION_KEY, 'base64');
 if (encryptionKey.length !== 32) {
   throw new Error('ENCRYPTION_KEY must be exactly 32 bytes encoded as base64');

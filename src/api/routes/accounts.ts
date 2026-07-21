@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { requireAuth, type GatewayVariables } from '../../auth/middleware.js';
 import { config } from '../../config.js';
+import { redactProxy } from '../../baileys/proxy.js';
 import { prisma } from '../../db/prisma.js';
 import { id } from '../../ids.js';
 import { accountFor, body, dispatchCommand, hasPermission } from '../helpers.js';
@@ -67,6 +68,7 @@ app.get('/v1/accounts/:accountId/status', requireAuth({ resource: 'accounts', ac
     next_connect_at: account.nextConnectAt,
     reconnect_attempt: account.reconnectAttempt,
     last_error: account.lastError,
+    proxy: config.WA_PROXY_URL ? redactProxy(config.WA_PROXY_URL) : null,
   });
 });
 
