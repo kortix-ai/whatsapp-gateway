@@ -58,8 +58,13 @@ Use a connection-scoped key for an agent controlling one WhatsApp number. Accoun
 - \`GET /v1/accounts/{accountId}/chats\`
 - \`GET /v1/accounts/{accountId}/contacts\`
 - \`GET /v1/accounts/{accountId}/groups\`
-- \`GET /v1/accounts/{accountId}/messages\`
+- \`GET /v1/accounts/{accountId}/messages\` — add \`q\` to full-text search message text
 - \`GET /v1/accounts/{accountId}/messages/{messageId}/media\` — download decrypted image/video/audio/document bytes (add \`?download=1\` to force a file download)
+- \`POST /v1/accounts/{accountId}/messages/media\` — send a local file (multipart/form-data: \`to\`, \`file\`, optional \`caption\`/\`kind\`)
+- \`POST /v1/accounts/{accountId}/messages/{messageId}/reaction\` — react with an emoji
+- \`POST /v1/accounts/{accountId}/messages/{messageId}/read\` — mark a message read
+- \`PATCH /v1/accounts/{accountId}/chats/{chatJid}\` — archive, pin, mute, or mark a chat read
+- \`POST /v1/accounts/{accountId}/presence\` — broadcast available/composing/recording presence
 - \`GET /v1/events\`
 
 ## Durable actions

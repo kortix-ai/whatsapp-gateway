@@ -144,6 +144,7 @@ model WhatsAppAccount {
   eventSequence        AccountEventSequence?
   events               InboundEvent[]
   commands             OutboundCommand[]
+  mediaUploads         WhatsAppMediaUpload[]
 
   @@index([tenantId])
   @@index([status, nextConnectAt])
@@ -336,6 +337,26 @@ model WebhookDelivery {
   @@unique([endpointId, eventId])
   @@index([status, nextAttemptAt])
   @@map("webhook_deliveries")
+}
+
+/// Staging area for an outbound media send. The API writes the raw bytes here,
+/// the durable command carries only the upload id, and the owning worker reads
+/// the row, sends it through Baileys, then deletes it. Keeping bytes out of the
+/// command payload is what allows large (100 MiB) attachments.
+model WhatsAppMediaUpload {
+  id        String          @id
+  accountId String
+  mimetype  String
+  filename  String
+  kind      String
+  caption   String?
+  voice     Boolean         @default(false)
+  bytes     Bytes
+  createdAt DateTime        @default(now())
+  account   WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+  @@map("whatsapp_media_uploads")
 }
 
 model AuditLog {

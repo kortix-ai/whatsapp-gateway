@@ -529,6 +529,34 @@ export class BaileysSession {
         if (sent) await this.persistMessage(sent, false);
         return { jid, message_id: sent?.key.id ?? null };
       }
+      case 'message.send.media': {
+        const jid = normalizeJid(String(payload.to ?? ''));
+        const uploadId = String(payload.upload_id ?? '');
+        if (!uploadId) throw new Error('upload_id is required');
+        const upload = await prisma.whatsAppMediaUpload.findFirst({
+          where: { id: uploadId, accountId: this.accountId },
+        });
+        if (!upload) throw new Error('Staged media upload was not found (it may already have been sent)');
+        const buffer = Buffer.from(upload.bytes);
+        const mimetype = upload.mimetype;
+        const caption = upload.caption ?? undefined;
+        const fileName = upload.filename || 'file';
+        const kind = upload.kind;
+        const content =
+          kind === 'image' ? { image: buffer, mimetype, ...(caption ? { caption } : {}) }
+          : kind === 'video' ? { video: buffer, mimetype, ...(caption ? { caption } : {}) }
+          : kind === 'audio' ? { audio: buffer, mimetype, ptt: upload.voice }
+          : kind === 'sticker' ? { sticker: buffer }
+          : { document: buffer, mimetype, fileName, ...(caption ? { caption } : {}) };
+        try {
+          const sent = await socket.sendMessage(jid, content as Parameters<WASocket['sendMessage']>[1]);
+          if (sent) await this.persistMessage(sent, false);
+          return { jid, message_id: sent?.key.id ?? null, kind, bytes: buffer.length };
+        } finally {
+          // The staged bytes are single-use; drop them either way.
+          await prisma.whatsAppMediaUpload.deleteMany({ where: { id: upload.id } });
+        }
+      }
       case 'group.create': {
         const subject = String(payload.subject ?? '');
         const participants = Array.isArray(payload.participants)

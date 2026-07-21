@@ -223,6 +223,73 @@ export const openApiDocument = {
         },
       },
     },
+    '/v1/accounts/{accountId}/messages/media': {
+      post: {
+        tags: ['Messages'],
+        summary: 'Send a local file as media',
+        description: 'multipart/form-data upload. Fields: to (phone or JID), file (binary, max 32 MiB), optional caption, kind (image|video|audio|sticker|document, auto-detected from the MIME type), and voice=true to send audio as a voice note.',
+        parameters: [accountParameter, idempotencyParameter],
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: object({
+                to: { type: 'string' },
+                file: { type: 'string', format: 'binary' },
+                caption: { type: 'string' },
+                kind: { type: 'string', enum: ['image', 'video', 'audio', 'sticker', 'document'] },
+                voice: { type: 'string', enum: ['true', 'false'] },
+              }, ['to', 'file']),
+            },
+          },
+        },
+        responses: {
+          '200': commandResponse('Media send reached a terminal state'),
+          '202': commandResponse('Media send is durably queued'),
+          '413': { description: 'File exceeds the send limit' },
+        },
+      },
+    },
+    '/v1/accounts/{accountId}/messages/{messageId}/reaction': {
+      post: {
+        tags: ['Messages'], summary: 'React to a message',
+        parameters: [accountParameter, pathParameter('messageId'), idempotencyParameter],
+        requestBody: jsonBody(object({ emoji: { type: 'string', description: 'Emoji to apply; empty string removes the reaction.' } }, ['emoji'])),
+        responses: { '200': commandResponse('Reaction reached a terminal state'), '202': commandResponse('Reaction is queued'), '404': { description: 'Message not found' } },
+      },
+    },
+    '/v1/accounts/{accountId}/messages/{messageId}/read': {
+      post: {
+        tags: ['Messages'], summary: 'Mark a message as read',
+        parameters: [accountParameter, pathParameter('messageId'), idempotencyParameter],
+        responses: { '200': commandResponse('Read receipt reached a terminal state'), '202': commandResponse('Read receipt is queued'), '404': { description: 'Message not found' } },
+      },
+    },
+    '/v1/accounts/{accountId}/chats/{chatJid}': {
+      patch: {
+        tags: ['Messages'], summary: 'Update chat state (archive, pin, mute, read)',
+        parameters: [accountParameter, pathParameter('chatJid'), idempotencyParameter],
+        requestBody: jsonBody(object({
+          archived: { type: 'boolean' },
+          pinned: { type: 'boolean' },
+          muted: { type: 'boolean' },
+          mute_seconds: { type: 'integer', minimum: 1 },
+          read: { type: 'boolean' },
+        })),
+        responses: { '200': commandResponse('Chat update reached a terminal state'), '202': commandResponse('Chat update is queued') },
+      },
+    },
+    '/v1/accounts/{accountId}/presence': {
+      post: {
+        tags: ['Messages'], summary: 'Broadcast presence',
+        parameters: [accountParameter, idempotencyParameter],
+        requestBody: jsonBody(object({
+          state: { type: 'string', enum: ['available', 'unavailable', 'composing', 'recording', 'paused'] },
+          to: { type: 'string', description: 'Optional chat JID to scope typing/recording presence to.' },
+        }, ['state'])),
+        responses: { '200': commandResponse('Presence reached a terminal state'), '202': commandResponse('Presence is queued') },
+      },
+    },
     '/v1/accounts/{accountId}/groups': {
       get: { tags: ['Groups'], summary: 'List synchronized groups', parameters: [accountParameter, { name: 'q', in: 'query', schema: { type: 'string' } }], responses: { '200': { description: 'Groups' } } },
       post: {

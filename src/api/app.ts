@@ -394,6 +394,7 @@ app.get('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', 
   const messageStatus = context.req.query('status');
   const messageType = context.req.query('type');
   const senderJid = context.req.query('sender_jid');
+  const search = context.req.query('q');
   const unreadChatIds = unreadOnly
     ? (await prisma.whatsAppChat.findMany({ where: { accountId: account.id, unreadCount: { gt: 0 } }, select: { jid: true } })).map((chat) => chat.jid)
     : undefined;
@@ -406,6 +407,7 @@ app.get('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', 
       ...(messageStatus ? { status: messageStatus } : {}),
       ...(messageType ? { messageType } : {}),
       ...(senderJid ? { senderJid } : {}),
+      ...(search ? { text: { contains: search, mode: 'insensitive' as const } } : {}),
       ...((beforeDate || since) ? { messageTimestamp: { ...(beforeDate ? { lt: beforeDate } : {}), ...(since ? { gte: since } : {}) } } : {}),
     },
     orderBy: { messageTimestamp: 'desc' },
@@ -481,6 +483,145 @@ app.get('/v1/accounts/:accountId/messages/:messageId/media', requireAuth({ resou
       'cache-control': 'private, max-age=3600',
     },
   });
+});
+
+// Largest local file accepted for an outbound media send. WhatsApp itself caps
+// documents around 100 MiB (and images/videos far lower), so this is the
+// practical ceiling. Bytes are staged in whatsapp_media_uploads rather than in
+// the command payload, so a large attachment never bloats jsonb.
+const MEDIA_SEND_MAX_BYTES = Number(process.env.MEDIA_SEND_MAX_BYTES ?? 100 * 1024 * 1024);
+
+function mediaKindFor(mimetype: string): 'image' | 'video' | 'audio' | 'sticker' | 'document' {
+  if (mimetype === 'image/webp') return 'sticker';
+  if (mimetype.startsWith('image/')) return 'image';
+  if (mimetype.startsWith('video/')) return 'video';
+  if (mimetype.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+// Send a local file as an image, video, audio note, sticker, or document.
+// Accepts multipart/form-data so any HTTP client or CLI can stream a real file.
+app.post('/v1/accounts/:accountId/messages/media', requireAuth({ resource: 'messages', action: 'send' }), async (context) => {
+  const actor = context.get('actor');
+  const account = await accountFor(actor, context.req.param('accountId'));
+  const form = await context.req.parseBody();
+  const to = typeof form.to === 'string' ? form.to.trim() : '';
+  if (!to) throw new HTTPException(400, { message: 'to is required' });
+  const file = form.file;
+  if (!(file instanceof File)) throw new HTTPException(400, { message: 'file is required as multipart/form-data' });
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength === 0) throw new HTTPException(400, { message: 'file is empty' });
+  if (bytes.byteLength > MEDIA_SEND_MAX_BYTES) {
+    throw new HTTPException(413, { message: `file exceeds the ${Math.floor(MEDIA_SEND_MAX_BYTES / (1024 * 1024))} MiB send limit` });
+  }
+  const mimetype = file.type || 'application/octet-stream';
+  const kind = typeof form.kind === 'string' && form.kind ? form.kind : mediaKindFor(mimetype);
+  const caption = typeof form.caption === 'string' && form.caption ? form.caption : null;
+
+  // Stage the bytes, then reference them from the durable command by id.
+  const upload = await prisma.whatsAppMediaUpload.create({
+    data: {
+      id: id('mup'),
+      accountId: account.id,
+      mimetype,
+      filename: file.name || 'file',
+      kind,
+      caption,
+      voice: form.voice === 'true',
+      bytes: Buffer.from(bytes),
+    },
+    select: { id: true },
+  });
+
+  try {
+    const commandId = await enqueueCommand(actor.tenantId, account.id, 'message.send.media', {
+      to, upload_id: upload.id,
+    }, idempotencyKey(context));
+    const result = await waitForCommand(commandId, 120_000);
+    return context.json(result, commandStatus(result));
+  } catch (error) {
+    await prisma.whatsAppMediaUpload.deleteMany({ where: { id: upload.id } });
+    throw error;
+  }
+});
+
+// React to a stored message with an emoji (empty string removes the reaction).
+app.post('/v1/accounts/:accountId/messages/:messageId/reaction', requireAuth({ resource: 'messages', action: 'send' }), async (context) => {
+  const input = await body(context, z.object({ emoji: z.string().max(16) }));
+  const actor = context.get('actor');
+  const account = await accountFor(actor, context.req.param('accountId'));
+  const message = await prisma.whatsAppMessage.findFirst({
+    where: { id: context.req.param('messageId'), accountId: account.id },
+    select: { chatJid: true, payload: true },
+  });
+  if (!message) throw new HTTPException(404, { message: 'Message not found' });
+  const key = (message.payload as { key?: unknown } | null)?.key;
+  if (!key) throw new HTTPException(422, { message: 'This message cannot be reacted to' });
+  const commandId = await enqueueCommand(actor.tenantId, account.id, 'message.send', {
+    to: message.chatJid,
+    content: { react: { text: input.emoji, key } },
+  }, idempotencyKey(context));
+  const result = await waitForCommand(commandId, 30_000);
+  return context.json(result, commandStatus(result));
+});
+
+// Mark a stored message as read.
+app.post('/v1/accounts/:accountId/messages/:messageId/read', requireAuth({ resource: 'messages', action: 'write' }), async (context) => {
+  const actor = context.get('actor');
+  const account = await accountFor(actor, context.req.param('accountId'));
+  const message = await prisma.whatsAppMessage.findFirst({
+    where: { id: context.req.param('messageId'), accountId: account.id },
+    select: { payload: true },
+  });
+  if (!message) throw new HTTPException(404, { message: 'Message not found' });
+  const key = (message.payload as { key?: unknown } | null)?.key;
+  if (!key) throw new HTTPException(422, { message: 'This message cannot be marked as read' });
+  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', {
+    action: 'messages.read', args: [[key]],
+  }, idempotencyKey(context));
+  const result = await waitForCommand(commandId, 30_000);
+  return context.json(result, commandStatus(result));
+});
+
+// Chat state: archive, pin, mute, and read/unread in one resource update.
+app.patch('/v1/accounts/:accountId/chats/:chatJid', requireAuth({ resource: 'chats', action: 'write' }), async (context) => {
+  const input = await body(context, z.object({
+    archived: z.boolean().optional(),
+    pinned: z.boolean().optional(),
+    muted: z.boolean().optional(),
+    mute_seconds: z.number().int().positive().optional(),
+    read: z.boolean().optional(),
+  }).refine((value) => Object.keys(value).length > 0, 'At least one chat state field is required'));
+  const actor = context.get('actor');
+  const account = await accountFor(actor, context.req.param('accountId'));
+  const chatJid = decodeURIComponent(context.req.param('chatJid'));
+
+  const modification: Record<string, unknown> = {};
+  if (input.archived !== undefined) modification.archive = input.archived;
+  if (input.pinned !== undefined) modification.pin = input.pinned;
+  if (input.muted !== undefined) modification.mute = input.muted ? (input.mute_seconds ?? 8 * 60 * 60) * 1000 : null;
+  if (input.read !== undefined) modification.markRead = input.read;
+
+  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', {
+    action: 'chats.modify', args: [modification, chatJid],
+  }, idempotencyKey(context));
+  const result = await waitForCommand(commandId, 30_000);
+  return context.json(result, commandStatus(result));
+});
+
+// Broadcast presence (available, unavailable, composing, recording, paused).
+app.post('/v1/accounts/:accountId/presence', requireAuth({ resource: 'presence', action: 'write' }), async (context) => {
+  const input = await body(context, z.object({
+    state: z.enum(['available', 'unavailable', 'composing', 'recording', 'paused']),
+    to: z.string().optional(),
+  }));
+  const actor = context.get('actor');
+  const account = await accountFor(actor, context.req.param('accountId'));
+  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', {
+    action: 'presence.update', args: input.to ? [input.state, input.to] : [input.state],
+  }, idempotencyKey(context));
+  const result = await waitForCommand(commandId, 30_000);
+  return context.json(result, commandStatus(result));
 });
 
 app.post('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', action: 'send' }), async (context) => {

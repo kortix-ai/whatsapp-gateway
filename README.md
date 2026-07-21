@@ -330,26 +330,51 @@ export WHATSAPP_GATEWAY_URL=https://whatsapp.example.com
 export WHATSAPP_GATEWAY_API_KEY=wag_secret
 ```
 
-Commands:
+`--account` selects the connection (or set `WAG_ACCOUNT`). It is optional when the key
+can only reach one connection. Global flags: `--json`, `--events`, `--read-only`,
+`--pick N`, `--timeout`, `--base-url`, `--api-key`, `--idempotency-key`.
+
+Recipients accept a JID, an E.164 or formatted phone number, or the name of a synced
+contact, group, or chat; ambiguous names ask you to re-run with `--pick N`.
 
 ```bash
-wag auth status
-wag accounts list
-wag accounts status <account>
-wag pair qr <account> --output pairing.png
-wag pair code <account> --phone +491234567890
-wag chats list <account> --unread
-wag messages list <account> --chat <jid> --unread
-wag messages send <account> --to <phone-or-jid> --text 'Hello'
-wag messages read <account> --message <gateway-message-id>
-wag groups list <account>
-wag groups create <account> --subject Friends --participant +49123 --participant +49456
-wag actions list --category privacy
-wag actions run <account> privacy.fetch --args '[true]'
+wag doctor                                   # health, readiness, auth
+wag auth status | qr --output pairing.png | code --phone +491234567890 | logout
+wag accounts list | add --name "Support line" | status
+
+wag send text --to "Ada Lovelace" --message 'Hello'
+wag send text --to +491234567890 --message 'Replying' --reply <message-id>
+wag send file --to +491234567890 --file ./invoice.pdf --caption 'Your invoice'
+wag send reaction --message <message-id> --emoji 👍
+wag send location --to +491234567890 --lat 52.52 --lng 13.405 --name 'Berlin'
+
+wag messages list --unread --limit 20
+wag messages search "invoice" --limit 20
+wag messages read --message <message-id>
+wag messages media --message <message-id> --output ./photo.jpg
+
+wag chats list --unread
+wag chats archive "Release team"
+wag chats pin +491234567890
+wag chats mute "Release team" --hours 8
+wag chats mark-read "Ada Lovelace"
+
+wag contacts list --search ada
+wag groups list | create --subject Friends --participant +49123 --participant +49456
+wag groups participants "Release team" --add +49123 --add +49456
+
+wag presence set --state composing --to "Ada Lovelace"
+wag profile set-name "Support" | set-status "Back at 09:00"
+
+wag events tail --type message.created
 wag commands get <command-id> --wait
-wag events tail <account> --type message.created
+wag actions list --category privacy
+wag actions run privacy.fetch --args '[true]'
 wag webhooks list
 ```
+
+Exit codes are deterministic for scripting: `0` success, `1` request failure,
+`2` usage error, `3` blocked by `--read-only`, `4` unresolved or ambiguous recipient.
 
 Add `--json` for compact machine output. `events tail` emits NDJSON. Use `--idempotency-key` when retrying commands.
 
@@ -387,8 +412,8 @@ Low-level transport, protocol, raw Signal mutation, and raw WebSocket operations
 ## Persisted reads and unread messages
 
 ```bash
-wag chats list "$ACCOUNT_ID" --unread
-wag messages list "$ACCOUNT_ID" --unread
+wag chats list --unread
+wag messages list --unread
 ```
 
 REST filters include:
@@ -423,7 +448,7 @@ States are `pending`, `processing`, `completed`, and `failed`. Reusing an `Idemp
 Poll normalized durable events:
 
 ```bash
-wag events tail "$ACCOUNT_ID" --type message.created
+wag events tail --type message.created
 ```
 
 List all subscribable event types:
@@ -541,15 +566,15 @@ account_id="$(wag accounts list --json | jq -r '.data[0].id')"
 phone="$(wag accounts list --json | jq -r '.data[0].phoneNumber')"
 
 wag auth status --json
-wag accounts status "$account_id" --json
-wag chats list "$account_id" --unread --json
-wag messages list "$account_id" --limit 5 --json
-wag groups list "$account_id" --json
+wag accounts status --account "$account_id" --json
+wag chats list --account "$account_id" --unread --json
+wag messages list --account "$account_id" --limit 5 --json
+wag groups list --account "$account_id" --json
 wag actions list --category privacy --json
-wag events tail "$account_id" --type message.created --once
-wag messages send "$account_id" \
+wag events tail --account "$account_id" --type message.created --once
+wag send text --account "$account_id" \
   --to "$phone" \
-  --text "WAG production self-test $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --message "WAG production self-test $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --idempotency-key "production-self-test-$(date -u +%Y%m%dT%H%M%SZ)" \
   --json
 ```
