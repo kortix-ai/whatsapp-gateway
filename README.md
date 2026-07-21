@@ -129,6 +129,12 @@ The production stack:
 - Persists PostgreSQL and Caddy data in named volumes.
 - Restarts long-running services automatically.
 
+The public container is also available as:
+
+```bash
+docker pull ghcr.io/kortix-ai/whatsapp-gateway:main
+```
+
 Upgrade:
 
 ```bash
@@ -210,10 +216,18 @@ npm link
 wag help
 ```
 
-When published to npm it can be installed with:
+Install the packaged CLI from the GitHub release:
 
 ```bash
-npm install -g @kortix/whatsapp-gateway
+npm install -g https://github.com/kortix-ai/whatsapp-gateway/releases/download/v0.1.0/kortix-whatsapp-gateway-0.1.0.tgz
+```
+
+The same package can be published to npm as `@kortix/whatsapp-gateway`; until registry publication is enabled, the release tarball is the canonical prebuilt CLI.
+
+After installation:
+
+```bash
+wag help
 ```
 
 Configure it:

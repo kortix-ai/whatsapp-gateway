@@ -583,7 +583,7 @@ These items require user-owned external state; they are not unimplemented server
 7. Run two worker replicas and prove a single active lease owner.
 8. Complete the Tailwind/shadcn visual rewrite and browser interaction suite.
 
-Publishing is also externally pending because the local repository currently has no Git remote. Before creating/pushing the public repository, verify the authenticated GitHub owner, repository name, npm scope ownership, GHCR target, and replace any README clone placeholder. Actual EC2/VPS provisioning requires an approved AWS account, region, instance/domain, and cost-bearing authorization.
+The source is public at `https://github.com/kortix-ai/whatsapp-gateway`, GitHub CI is green, and `ghcr.io/kortix-ai/whatsapp-gateway:main` is anonymously pullable. The `v0.1.0` GitHub release carries an npm-compatible prebuilt `wag` package and produces immutable GHCR semver tags. Direct npm registry publication remains pending because this workstation is not authenticated to npm. Actual EC2/VPS provisioning requires an approved cloud account, region, instance/domain, and cost-bearing authorization.
 
 ## 20. Exact real-phone test
 
