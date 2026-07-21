@@ -102,7 +102,7 @@ export function OverviewPage() {
       <div className="space-y-3">
         <p className="text-sm font-medium text-muted-foreground">Quick actions</p>
         <QuickLink to="../pairing" icon={<QrCode className="size-4" />} title="Pairing" description="Link or relink the device" />
-        <QuickLink to="/app/api-keys" icon={<KeyRound className="size-4" />} title="Create API key" description="Scope a key to this connection" />
+        <QuickLink to={`/app/api-keys?connection=${account.id}`} icon={<KeyRound className="size-4" />} title="Create API key" description="Scope a key to this connection" />
         <QuickLink to="../messages" icon={<MessagesSquare className="size-4" />} title="Messages" description="Browse synchronized messages" />
       </div>
     </div>

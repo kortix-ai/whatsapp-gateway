@@ -1,5 +1,6 @@
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/page-header';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { SecretDialog } from '@/components/secret-dialog';
@@ -41,6 +42,19 @@ export function ApiKeysPage() {
   const keys = useApiKeys();
   const accounts = useAccounts();
   const revoke = useRevokeApiKey();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // A connection can deep-link here (…/api-keys?connection=<id>) to open the
+  // create dialog already scoped to that number. Capture it once, then clear it.
+  const [initialConnection] = useState(() => searchParams.get('connection') ?? undefined);
+  useEffect(() => {
+    if (searchParams.has('connection')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('connection');
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const accountsById = useMemo(() => {
     const map = new Map<string, Account>();
@@ -48,14 +62,19 @@ export function ApiKeysPage() {
     return map;
   }, [accounts.data]);
 
+  const createDialogProps = {
+    accounts: accounts.data ?? [],
+    defaultConnectionId: initialConnection,
+    autoOpen: Boolean(initialConnection),
+  };
+  const createAction = keys.data && keys.data.length > 0 ? <CreateKeyDialog {...createDialogProps} /> : null;
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="API keys"
         description="Give agents a scoped key. Connection keys are limited to one number; account keys cover every connection."
-        actions={
-          keys.data && keys.data.length > 0 ? <CreateKeyDialog accounts={accounts.data ?? []} /> : null
-        }
+        actions={createAction}
       />
 
       {keys.isLoading && <ListSkeleton rows={3} />}
@@ -71,7 +90,7 @@ export function ApiKeysPage() {
             <EmptyDescription>Create a key to let an agent operate a connection through the gateway.</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <CreateKeyDialog accounts={accounts.data ?? []} />
+            <CreateKeyDialog {...createDialogProps} />
           </EmptyContent>
         </Empty>
       )}
@@ -161,12 +180,20 @@ function OptionCard({ active, title, description, onClick }: { active: boolean; 
   );
 }
 
-function CreateKeyDialog({ accounts }: { accounts: Account[] }) {
+function CreateKeyDialog({
+  accounts,
+  defaultConnectionId,
+  autoOpen = false,
+}: {
+  accounts: Account[];
+  defaultConnectionId?: string;
+  autoOpen?: boolean;
+}) {
   const create = useCreateApiKey();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(autoOpen);
   const [name, setName] = useState('');
   const [scope, setScope] = useState<'connection' | 'account'>('connection');
-  const [accountId, setAccountId] = useState<string>('');
+  const [accountId, setAccountId] = useState<string>(defaultConnectionId ?? '');
   const [expiry, setExpiry] = useState('never');
   const [preset, setPreset] = useState<PermissionPreset>('full');
   const [custom, setCustom] = useState<Record<string, string[]>>(readOnlyPermissions());
@@ -176,7 +203,7 @@ function CreateKeyDialog({ accounts }: { accounts: Account[] }) {
   function reset() {
     setName('');
     setScope('connection');
-    setAccountId(accounts[0]?.id ?? '');
+    setAccountId(defaultConnectionId ?? accounts[0]?.id ?? '');
     setExpiry('never');
     setPreset('full');
     setCustom(readOnlyPermissions());
@@ -212,7 +239,12 @@ function CreateKeyDialog({ accounts }: { accounts: Account[] }) {
       ...(scope === 'connection' ? { account_id: accountId } : {}),
     };
     create.mutate(input, {
-      onSuccess: (key) => setCreated(key),
+      // Close the form dialog first so only the one-time secret dialog is
+      // mounted — two stacked modals trap focus and block copying the key.
+      onSuccess: (key) => {
+        setOpen(false);
+        setCreated(key);
+      },
       onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not create the key.'),
     });
   }
