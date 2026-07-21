@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
-const schema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   RUNTIME_ROLE: z.enum(['api', 'worker', 'webhooks', 'all']).default('all'),
   PORT: z.coerce.number().int().positive().default(8080),
@@ -30,8 +30,9 @@ const schema = z.object({
   // Pin the WhatsApp Web version as "major,minor,patch"; empty auto-tracks the latest.
   WA_WEB_VERSION: z.string().optional().transform((value) => value?.trim() || undefined),
   // Locale country in the login payload. Default US is the global norm; set to the
-  // number's country (e.g. GB) so the reported locale matches the account.
-  WA_COUNTRY_CODE: z.string().length(2).optional().transform((value) => value?.toUpperCase()),
+  // number's country (e.g. GB) so the reported locale matches the account. docker-compose
+  // passes this as "" when unset, so normalize empty to undefined before validating length.
+  WA_COUNTRY_CODE: z.string().optional().transform((value) => value?.trim().toUpperCase() || undefined),
   PAIRING_TTL_SECONDS: z.coerce.number().int().min(60).default(300),
   WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(1000),
   WEBHOOK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
@@ -42,7 +43,10 @@ const schema = z.object({
   GATEWAY_RELEASE: z.string().default('development'),
 });
 
-const parsed = schema.parse(process.env);
+const parsed = envSchema.parse(process.env);
+if (parsed.WA_COUNTRY_CODE && parsed.WA_COUNTRY_CODE.length !== 2) {
+  throw new Error('WA_COUNTRY_CODE must be a 2-letter country code, e.g. GB');
+}
 if (parsed.WA_WEB_VERSION) {
   const parts = parsed.WA_WEB_VERSION.split(',').map((part) => Number(part.trim()));
   if (parts.length !== 3 || parts.some(Number.isNaN)) {
