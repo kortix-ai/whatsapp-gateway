@@ -40,7 +40,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: publish
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -52,7 +51,7 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
         run: |
           parameters="$(jq -nc --arg image "$IMAGE" '{commands:[
-            "set -euo pipefail",
+            "set -eu",
             "cd /opt/whatsapp-gateway",
             "git fetch origin main",
             "git merge --ff-only origin/main",

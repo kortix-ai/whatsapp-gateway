@@ -3,7 +3,10 @@ set -euxo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y docker.io docker-compose-v2 awscli git jq
+apt-get install -y docker.io docker-compose-v2 git jq curl unzip
+curl --fail --silent --show-error https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
 systemctl enable --now docker
 
 install -d -m 755 /opt/whatsapp-gateway /etc/whatsapp-gateway

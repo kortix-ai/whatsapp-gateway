@@ -231,6 +231,20 @@ ALLOWED_EMAILS=marko@kortix.ai,operator@example.com
 
 Non-allowlisted users cannot create an account, create a session, or use previously issued API keys.
 
+For the Kortix deployment, edit the comma-separated `allowed_emails` value in `deploy/terraform/production.auto.tfvars`, commit it, and apply Terraform. The secret version is updated without exposing the list or any password to the instance user data. Redeploy once so the services reload it:
+
+```bash
+terraform -chdir=deploy/terraform apply
+image="$(curl -sS https://wag.kortix.cloud/health | jq -r '.release')"
+aws ssm send-command \
+  --region us-west-2 \
+  --instance-ids "$(terraform -chdir=deploy/terraform output -raw instance_id)" \
+  --document-name AWS-RunShellScript \
+  --parameters "commands=['cd /opt/whatsapp-gateway && scripts/deploy-aws.sh ghcr.io/kortix-ai/whatsapp-gateway:${image}']"
+```
+
+The allowlist controls browser signup/session access only. Once signed in, each user owns an isolated tenant and can mint either an account key (all of that user's current/future connections) or a connection key (exactly one phone connection). Use connection keys for agents.
+
 To run an open signup deployment explicitly:
 
 ```dotenv

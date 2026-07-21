@@ -30,5 +30,6 @@ mv "$env_next" "$deploy_root/.env"
 cd "$deploy_root"
 docker compose --env-file .env -f docker-compose.production.yml pull
 docker compose --env-file .env -f docker-compose.production.yml up -d --remove-orphans --wait
-curl --fail --silent --show-error http://127.0.0.1:8080/health >/dev/null
+docker compose --env-file .env -f docker-compose.production.yml exec -T api \
+  node -e "fetch('http://127.0.0.1:8080/health').then((response) => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))"
 docker compose --env-file .env -f docker-compose.production.yml ps

@@ -256,10 +256,17 @@ resource "aws_eip" "gateway" {
 resource "cloudflare_record" "gateway" {
   zone_id = data.cloudflare_zone.gateway.id
   name    = trimsuffix(var.domain, ".${var.cloudflare_zone}")
-  value   = aws_eip.gateway.public_ip
+  content = aws_eip.gateway.public_ip
   type    = "A"
   ttl     = 1
   proxied = true
+}
+
+# kortix.cloud has a wildcard Worker route. This more-specific no-script route
+# lets the gateway reach its own Caddy origin instead of the generic proxy.
+resource "cloudflare_worker_route" "gateway_bypass" {
+  zone_id = data.cloudflare_zone.gateway.id
+  pattern = "${var.domain}/*"
 }
 
 resource "aws_iam_role" "github_deploy" {
