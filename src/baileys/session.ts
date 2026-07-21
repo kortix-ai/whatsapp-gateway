@@ -53,10 +53,26 @@ function disconnectCode(error: unknown): number | undefined {
     ?? (error as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Baileys command timed out after ${timeoutMs / 1_000} seconds`)), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export class BaileysSession {
   private socket: WASocket | null = null;
   private stopped = false;
   private commandTimer: NodeJS.Timeout | null = null;
+  private commandInFlight = false;
   private pairingTimer: NodeJS.Timeout | null = null;
   private pairingTransportReady = false;
   private readonly log;
@@ -132,6 +148,7 @@ export class BaileysSession {
           },
         });
         await emitEvent(this.accountId, 'connection.opened', { jid: me?.id, name: me?.name });
+        void this.syncAllGroups();
       }
       if (update.connection === 'close' && !this.stopped) {
         const code = disconnectCode(update.lastDisconnect?.error);
@@ -353,6 +370,24 @@ export class BaileysSession {
     if (contacts.length) await emitEvent(this.accountId, 'contact.updated', { count: contacts.length });
   }
 
+  /**
+   * WhatsApp only emits groups.upsert for groups with recent activity, so on a
+   * fresh connection most groups never arrive. Fetch every participating group
+   * once so the persisted group list is complete.
+   */
+  private async syncAllGroups() {
+    const socket = this.socket;
+    if (!socket) return;
+    try {
+      const groups = await socket.groupFetchAllParticipating();
+      const list = Object.values(groups);
+      for (const group of list) await this.upsertGroup(group);
+      logger.info({ accountId: this.accountId, count: list.length }, 'Synced participating groups');
+    } catch (error) {
+      logger.warn({ err: error, accountId: this.accountId }, 'Failed to sync participating groups');
+    }
+  }
+
   private async upsertGroup(group: GroupMetadata) {
     await prisma.whatsAppGroup.upsert({
       where: { accountId_jid: { accountId: this.accountId, jid: group.id } },
@@ -409,40 +444,48 @@ export class BaileysSession {
   }
 
   private async processNextCommand() {
-    if (!this.socket || this.stopped) return;
-    await prisma.outboundCommand.updateMany({
-      where: {
-        accountId: this.accountId,
-        status: 'processing',
-        claimedAt: { lt: new Date(Date.now() - 120_000) },
-      },
-      data: { status: 'pending', claimedAt: null, claimedBy: null, availableAt: new Date() },
-    });
-    const command = await prisma.outboundCommand.findFirst({
-      where: { accountId: this.accountId, status: 'pending', availableAt: { lte: new Date() } },
-      orderBy: { createdAt: 'asc' },
-    });
-    if (!command) return;
-    if (command.type === 'pair.code' && !this.pairingTransportReady) return;
-    const claimed = await prisma.outboundCommand.updateMany({
-      where: { id: command.id, status: 'pending' },
-      data: { status: 'processing', claimedBy: config.workerId, claimedAt: new Date(), attemptCount: { increment: 1 } },
-    });
-    if (!claimed.count) return;
+    if (!this.socket || this.stopped || this.commandInFlight) return;
+    this.commandInFlight = true;
     try {
-      const result = await this.executeCommand(command.type, command.payload as Record<string, unknown>);
-      await prisma.outboundCommand.update({
-        where: { id: command.id },
-        data: { status: 'completed', result: json(result), completedAt: new Date(), error: null },
+      await prisma.outboundCommand.updateMany({
+        where: {
+          accountId: this.accountId,
+          status: 'processing',
+          OR: [{ claimedBy: { not: config.workerId } }, { claimedBy: null }],
+        },
+        data: { status: 'pending', claimedAt: null, claimedBy: null, availableAt: new Date() },
       });
-      await emitEvent(this.accountId, 'command.completed', { command_id: command.id, type: command.type });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await prisma.outboundCommand.update({
-        where: { id: command.id },
-        data: { status: 'failed', error: message, completedAt: new Date() },
+      const command = await prisma.outboundCommand.findFirst({
+        where: { accountId: this.accountId, status: 'pending', availableAt: { lte: new Date() } },
+        orderBy: { createdAt: 'asc' },
       });
-      await emitEvent(this.accountId, 'command.failed', { command_id: command.id, type: command.type, error: message });
+      if (!command) return;
+      if (command.type === 'pair.code' && !this.pairingTransportReady) return;
+      const claimed = await prisma.outboundCommand.updateMany({
+        where: { id: command.id, status: 'pending' },
+        data: { status: 'processing', claimedBy: config.workerId, claimedAt: new Date(), attemptCount: { increment: 1 } },
+      });
+      if (!claimed.count) return;
+      try {
+        const result = await withTimeout(
+          this.executeCommand(command.type, command.payload as Record<string, unknown>),
+          110_000,
+        );
+        await prisma.outboundCommand.update({
+          where: { id: command.id },
+          data: { status: 'completed', result: json(result), completedAt: new Date(), error: null },
+        });
+        await emitEvent(this.accountId, 'command.completed', { command_id: command.id, type: command.type });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await prisma.outboundCommand.update({
+          where: { id: command.id },
+          data: { status: 'failed', error: message, completedAt: new Date() },
+        });
+        await emitEvent(this.accountId, 'command.failed', { command_id: command.id, type: command.type, error: message });
+      }
+    } finally {
+      this.commandInFlight = false;
     }
   }
 
