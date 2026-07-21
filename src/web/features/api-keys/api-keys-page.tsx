@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '@/components/page-header';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { SecretDialog } from '@/components/secret-dialog';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -77,31 +76,24 @@ export function ApiKeysPage() {
         actions={createAction}
       />
 
-      {keys.isLoading && <ListSkeleton rows={3} />}
-      {keys.isError && <ErrorState error={keys.error} onRetry={() => keys.refetch()} />}
-
-      {keys.data && keys.data.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <KeyRound />
-            </EmptyMedia>
-            <EmptyTitle>No API keys</EmptyTitle>
-            <EmptyDescription>Create a key to let an agent operate a connection through the gateway.</EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <CreateKeyDialog {...createDialogProps} />
-          </EmptyContent>
-        </Empty>
-      )}
-
-      {keys.data && keys.data.length > 0 && (
+      <QueryListState
+        query={keys}
+        skeletonRows={3}
+        empty={{
+          icon: <KeyRound />,
+          title: 'No API keys',
+          description: 'Create a key to let an agent operate a connection through the gateway.',
+          action: <CreateKeyDialog {...createDialogProps} />,
+        }}
+      >
+        {(items) => (
         <ul className="divide-y overflow-hidden rounded-lg border">
-          {keys.data.map((key) => (
+          {items.map((key) => (
             <ApiKeyRow key={key.id} apiKey={key} accountsById={accountsById} onRevoke={(id) => revoke.mutateAsync(id)} revoking={revoke.isPending} />
           ))}
         </ul>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

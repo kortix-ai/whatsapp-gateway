@@ -2,10 +2,9 @@ import { MessageCircle } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SearchInput } from '@/components/search-input';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatRelativeTime, friendlyJid } from '@/lib/format';
 import { useDebouncedValue } from '@/lib/hooks';
@@ -21,7 +20,7 @@ export function ChatsPage() {
   const [archived, setArchived] = useState('all');
   const q = useDebouncedValue(search, 300);
 
-  const { data: chats, isLoading, isError, error, refetch } = useChats(account.id, {
+  const chats = useChats(account.id, {
     q: q || undefined,
     unread: unread || undefined,
     archived: archived === 'all' ? undefined : archived,
@@ -52,28 +51,20 @@ export function ChatsPage() {
         </div>
       </div>
 
-      {isLoading && <ListSkeleton rows={6} />}
-      {isError && <ErrorState error={error} onRetry={() => refetch()} />}
-
-      {chats && chats.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <MessageCircle />
-            </EmptyMedia>
-            <EmptyTitle>No chats</EmptyTitle>
-            <EmptyDescription>
-              {account.status === 'connected'
-                ? 'Chats appear as WhatsApp synchronizes history and new conversations arrive.'
-                : 'Connect this number to synchronize chats.'}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-
-      {chats && chats.length > 0 && (
+      <QueryListState
+        query={chats}
+        skeletonRows={6}
+        empty={{
+          icon: <MessageCircle />,
+          title: 'No chats',
+          description: account.status === 'connected'
+            ? 'Chats appear as WhatsApp synchronizes history and new conversations arrive.'
+            : 'Connect this number to synchronize chats.',
+        }}
+      >
+        {(items) => (
         <ul className="divide-y overflow-hidden rounded-lg border">
-          {chats.map((chat) => (
+          {items.map((chat) => (
             <li key={chat.jid}>
               <button
                 type="button"
@@ -96,7 +87,8 @@ export function ChatsPage() {
             </li>
           ))}
         </ul>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

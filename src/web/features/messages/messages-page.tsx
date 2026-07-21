@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -16,7 +16,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -37,7 +36,7 @@ export function MessagesPage() {
   const [limit, setLimit] = useState(50);
   const connected = account.status === 'connected';
 
-  const { data: messages, isLoading, isError, error, refetch, isFetching } = useMessages(account.id, {
+  const messages = useMessages(account.id, {
     chat_jid: chatJid,
     direction: direction === 'all' ? undefined : direction,
     limit,
@@ -75,27 +74,19 @@ export function MessagesPage() {
         <SendMessageDialog accountId={account.id} defaultTo={chatJid} connected={connected} />
       </div>
 
-      {isLoading && <ListSkeleton rows={6} />}
-      {isError && <ErrorState error={error} onRetry={() => refetch()} />}
-
-      {messages && messages.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <MessagesSquare />
-            </EmptyMedia>
-            <EmptyTitle>No messages</EmptyTitle>
-            <EmptyDescription>
-              {connected ? 'Messages appear here as they are sent and received.' : 'Connect this number to see messages.'}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-
-      {messages && messages.length > 0 && (
+      <QueryListState
+        query={messages}
+        skeletonRows={6}
+        empty={{
+          icon: <MessagesSquare />,
+          title: 'No messages',
+          description: connected ? 'Messages appear here as they are sent and received.' : 'Connect this number to see messages.',
+        }}
+      >
+        {(items) => (
         <>
           <ul className="space-y-2">
-            {messages.map((message) => {
+            {items.map((message) => {
               const outbound = message.direction === 'outbound';
               return (
                 <li key={message.id} className="flex gap-3 rounded-lg border bg-card p-3">
@@ -126,15 +117,16 @@ export function MessagesPage() {
               );
             })}
           </ul>
-          {messages.length >= limit && (
+          {items.length >= limit && (
             <div className="flex justify-center">
-              <Button variant="outline" size="sm" loading={isFetching} onClick={() => setLimit((value) => value + 50)}>
+              <Button variant="outline" size="sm" loading={messages.isFetching} onClick={() => setLimit((value) => value + 50)}>
                 Load more
               </Button>
             </div>
           )}
         </>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

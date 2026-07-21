@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { CopyButton } from '@/components/copy-button';
 import { SearchInput } from '@/components/search-input';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,7 +18,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -54,7 +53,7 @@ export function GroupsPage() {
   const connected = account.status === 'connected';
   const [search, setSearch] = useState('');
   const q = useDebouncedValue(search, 300);
-  const { data: groups, isLoading, isError, error, refetch } = useGroups(account.id, { q: q || undefined });
+  const groups = useGroups(account.id, { q: q || undefined });
 
   return (
     <div className="space-y-4">
@@ -63,24 +62,14 @@ export function GroupsPage() {
         <CreateGroupDialog accountId={account.id} connected={connected} />
       </div>
 
-      {isLoading && <ListSkeleton rows={5} />}
-      {isError && <ErrorState error={error} onRetry={() => refetch()} />}
-
-      {groups && groups.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <UsersRound />
-            </EmptyMedia>
-            <EmptyTitle>No groups</EmptyTitle>
-            <EmptyDescription>Create a group, or wait for existing groups to synchronize.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-
-      {groups && groups.length > 0 && (
+      <QueryListState
+        query={groups}
+        skeletonRows={5}
+        empty={{ icon: <UsersRound />, title: 'No groups', description: 'Create a group, or wait for existing groups to synchronize.' }}
+      >
+        {(items) => (
         <ul className="divide-y overflow-hidden rounded-lg border">
-          {groups.map((group) => {
+          {items.map((group) => {
             const participants = readParticipants(group.participants);
             return (
               <li key={group.jid} className="flex items-center gap-3 bg-card px-4 py-3">
@@ -97,7 +86,8 @@ export function GroupsPage() {
             );
           })}
         </ul>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

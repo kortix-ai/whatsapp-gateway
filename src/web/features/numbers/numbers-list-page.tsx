@@ -1,16 +1,16 @@
 import { ChevronRight, Plus, Smartphone } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { PageHeader } from '@/components/page-header';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { formatPhone, formatRelativeTime, friendlyJid } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useAccounts } from './api';
 
 export function NumbersListPage() {
-  const { data: accounts, isLoading, isError, error, refetch } = useAccounts();
+  const accountsQuery = useAccounts();
+  const accounts = accountsQuery.data;
 
   return (
     <div className="space-y-6">
@@ -28,33 +28,25 @@ export function NumbersListPage() {
         }
       />
 
-      {isLoading && <ListSkeleton rows={4} />}
-      {isError && <ErrorState error={error} onRetry={() => refetch()} />}
-
-      {accounts && accounts.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Smartphone />
-            </EmptyMedia>
-            <EmptyTitle>No connections yet</EmptyTitle>
-            <EmptyDescription>
-              Create a connection, then pair it from your phone through WhatsApp → Linked Devices.
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
+      <QueryListState
+        query={accountsQuery}
+        skeletonRows={4}
+        empty={{
+          icon: <Smartphone />,
+          title: 'No connections yet',
+          description: 'Create a connection, then pair it from your phone through WhatsApp → Linked Devices.',
+          action: (
             <Button asChild>
               <Link to="/app/numbers/new">
                 <Plus /> Create your first connection
               </Link>
             </Button>
-          </EmptyContent>
-        </Empty>
-      )}
-
-      {accounts && accounts.length > 0 && (
+          ),
+        }}
+      >
+        {(items) => (
         <ul className="grid gap-3 sm:grid-cols-2">
-          {accounts.map((account) => {
+          {items.map((account) => {
             const subtitle = account.phoneNumber
               ? formatPhone(account.phoneNumber)
               : account.whatsappJid
@@ -91,7 +83,8 @@ export function NumbersListPage() {
             );
           })}
         </ul>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

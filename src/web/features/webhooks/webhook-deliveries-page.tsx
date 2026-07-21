@@ -1,10 +1,9 @@
 import { RefreshCw, Send } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ApiError } from '@/lib/api';
 import { formatDateTime, humanizeEventType } from '@/lib/format';
@@ -56,24 +55,14 @@ export function WebhookDeliveriesPage() {
         </Button>
       </div>
 
-      {deliveries.isLoading && <ListSkeleton rows={6} />}
-      {deliveries.isError && <ErrorState error={deliveries.error} onRetry={() => deliveries.refetch()} />}
-
-      {deliveries.data && deliveries.data.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Send />
-            </EmptyMedia>
-            <EmptyTitle>No deliveries yet</EmptyTitle>
-            <EmptyDescription>Deliveries appear here as matching events occur.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-
-      {deliveries.data && deliveries.data.length > 0 && (
+      <QueryListState
+        query={deliveries}
+        skeletonRows={6}
+        empty={{ icon: <Send />, title: 'No deliveries yet', description: 'Deliveries appear here as matching events occur.' }}
+      >
+        {(items) => (
         <ul className="divide-y overflow-hidden rounded-lg border">
-          {deliveries.data.map((delivery) => (
+          {items.map((delivery) => (
             <li key={delivery.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-card px-4 py-3">
               <Badge variant={deliveryVariant(delivery.status)} className="w-24 justify-center">
                 {delivery.status}
@@ -99,7 +88,8 @@ export function WebhookDeliveriesPage() {
             </li>
           ))}
         </ul>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

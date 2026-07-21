@@ -1,15 +1,15 @@
 import { ChevronRight, Plus, Webhook } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { PageHeader } from '@/components/page-header';
-import { ErrorState, ListSkeleton } from '@/components/states';
+import { QueryListState } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
 import { useWebhookEndpoints } from './api';
 
 export function WebhooksListPage() {
-  const { data: endpoints, isLoading, isError, error, refetch } = useWebhookEndpoints();
+  const endpointsQuery = useWebhookEndpoints();
+  const endpoints = endpointsQuery.data;
 
   return (
     <div className="space-y-6">
@@ -27,31 +27,25 @@ export function WebhooksListPage() {
         }
       />
 
-      {isLoading && <ListSkeleton rows={3} />}
-      {isError && <ErrorState error={error} onRetry={() => refetch()} />}
-
-      {endpoints && endpoints.length === 0 && (
-        <Empty className="border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Webhook />
-            </EmptyMedia>
-            <EmptyTitle>No webhook endpoints</EmptyTitle>
-            <EmptyDescription>Point an endpoint at your receiver to stream events, signed with HMAC-SHA256.</EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
+      <QueryListState
+        query={endpointsQuery}
+        skeletonRows={3}
+        empty={{
+          icon: <Webhook />,
+          title: 'No webhook endpoints',
+          description: 'Point an endpoint at your receiver to stream events, signed with HMAC-SHA256.',
+          action: (
             <Button asChild>
               <Link to="/app/webhooks/new">
                 <Plus /> Create an endpoint
               </Link>
             </Button>
-          </EmptyContent>
-        </Empty>
-      )}
-
-      {endpoints && endpoints.length > 0 && (
+          ),
+        }}
+      >
+        {(items) => (
         <ul className="space-y-3">
-          {endpoints.map((endpoint) => (
+          {items.map((endpoint) => (
             <li key={endpoint.id}>
               <Link
                 to={`/app/webhooks/${endpoint.id}/overview`}
@@ -82,7 +76,8 @@ export function WebhooksListPage() {
             </li>
           ))}
         </ul>
-      )}
+        )}
+      </QueryListState>
     </div>
   );
 }

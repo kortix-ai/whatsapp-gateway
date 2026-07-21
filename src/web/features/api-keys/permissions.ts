@@ -1,24 +1,11 @@
+import { gatewayPermissions } from '../../../shared/permissions.js';
+
 /**
- * Gateway permission registry, mirroring the server's `gatewayPermissions`
- * (src/auth/auth.ts). Used to render permission presets and the custom matrix
- * when minting API keys.
+ * Gateway permission registry, shared with the server (src/shared/permissions.ts).
+ * Used to render permission presets and the custom matrix when minting API keys.
+ * Widened so `actions.includes('read')` typechecks over the const tuples.
  */
-export const PERMISSION_REGISTRY: Record<string, readonly string[]> = {
-  accounts: ['read', 'write', 'pair', 'disconnect'],
-  messages: ['read', 'write', 'send'],
-  groups: ['read', 'write'],
-  contacts: ['read', 'write'],
-  chats: ['read', 'write'],
-  presence: ['read', 'write'],
-  profile: ['read', 'write'],
-  privacy: ['read', 'write'],
-  business: ['read', 'write'],
-  communities: ['read', 'write'],
-  newsletters: ['read', 'write'],
-  calls: ['write'],
-  webhooks: ['read', 'write', 'replay'],
-  agent: ['skill'],
-};
+export const PERMISSION_REGISTRY: Record<string, readonly string[]> = gatewayPermissions;
 
 export type PermissionPreset = 'full' | 'read' | 'custom';
 

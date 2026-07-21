@@ -20,5 +20,5 @@
       "@/*": ["./src/web/*"]
     }
   },
-  "include": ["src/web"]
+  "include": ["src/web", "src/shared"]
 }

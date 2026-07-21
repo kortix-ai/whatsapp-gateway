@@ -4,23 +4,9 @@ import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { config } from '../config.js';
 import { prisma } from '../db/prisma.js';
 import { isAllowedEmail } from './allowlist.js';
+import { gatewayPermissions } from '../shared/permissions.js';
 
-export const gatewayPermissions = {
-  accounts: ['read', 'write', 'pair', 'disconnect'],
-  messages: ['read', 'write', 'send'],
-  groups: ['read', 'write'],
-  contacts: ['read', 'write'],
-  chats: ['read', 'write'],
-  presence: ['read', 'write'],
-  profile: ['read', 'write'],
-  privacy: ['read', 'write'],
-  business: ['read', 'write'],
-  communities: ['read', 'write'],
-  newsletters: ['read', 'write'],
-  calls: ['write'],
-  webhooks: ['read', 'write', 'replay'],
-  agent: ['skill'],
-} as const;
+export { gatewayPermissions };
 
 export const auth = betterAuth({
   appName: 'WhatsApp Gateway',
