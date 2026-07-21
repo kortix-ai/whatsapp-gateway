@@ -1,5 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import { auth } from './auth.js';
+import { isAllowedEmail } from './allowlist.js';
+import { prisma } from '../db/prisma.js';
 import { ensureTenant } from '../services/tenants.js';
 
 export type AuthActor = {
@@ -34,6 +36,10 @@ export function requireAuth(permission?: Permission): MiddlewareHandler<{ Variab
       if (!verification.valid || !verification.key) {
         return context.json({ error: 'invalid_api_key', message: verification.error?.message ?? 'Invalid API key' }, 401);
       }
+      const keyOwner = await prisma.user.findUnique({ where: { id: verification.key.referenceId }, select: { email: true } });
+      if (!keyOwner || !isAllowedEmail(keyOwner.email)) {
+        return context.json({ error: 'user_not_allowed', message: 'This user is not allowed to access the gateway' }, 403);
+      }
       const tenant = await ensureTenant(verification.key.referenceId);
       context.set('actor', {
         type: 'api_key',
@@ -50,6 +56,9 @@ export function requireAuth(permission?: Permission): MiddlewareHandler<{ Variab
 
     const session = await auth.api.getSession({ headers: context.req.raw.headers });
     if (!session) return context.json({ error: 'unauthorized', message: 'Sign in or provide an API key' }, 401);
+    if (!isAllowedEmail(session.user.email)) {
+      return context.json({ error: 'user_not_allowed', message: 'This user is not allowed to access the gateway' }, 403);
+    }
     const tenant = await ensureTenant(session.user.id, session.user.name || 'My workspace');
     context.set('actor', {
       type: 'user',

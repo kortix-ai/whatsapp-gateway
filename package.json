@@ -1,7 +1,31 @@
 {
   "name": "@kortix/whatsapp-gateway",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kortix-ai/whatsapp-gateway.git"
+  },
+  "homepage": "https://github.com/kortix-ai/whatsapp-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/kortix-ai/whatsapp-gateway/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "wag": "dist/server/cli.js"
+  },
+  "files": [
+    "dist/server",
+    "dist/web",
+    "prisma",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
   "type": "module",
   "packageManager": "pnpm@8.11.0",
   "engines": {
@@ -14,7 +38,7 @@
     "dev:webhooks": "RUNTIME_ROLE=webhooks tsx watch src/main.ts",
     "dev:web": "vite",
     "build": "pnpm db:generate && pnpm build:server && pnpm build:web",
-    "build:server": "tsup src/main.ts src/scripts/e2e.ts --format esm --platform node --target node22 --out-dir dist/server --splitting false --sourcemap",
+    "build:server": "tsup src/main.ts src/cli.ts src/scripts/e2e.ts --format esm --platform node --target node22 --out-dir dist/server --splitting false --sourcemap",
     "build:web": "vite build",
     "start": "node dist/server/main.js",
     "start:api": "RUNTIME_ROLE=api node dist/server/main.js",
@@ -30,7 +54,8 @@
     "lint": "eslint .",
     "e2e": "tsx src/scripts/e2e.ts",
     "smoke:curl": "bash scripts/smoke.sh",
-    "skill:validate": "python3 /Users/markokraemer/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/whatsapp-gateway"
+    "skill:validate": "node scripts/validate-skill.mjs",
+    "wag": "tsx src/cli.ts"
   },
   "dependencies": {
     "@better-auth/api-key": "1.6.23",

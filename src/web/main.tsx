@@ -81,9 +81,10 @@ function Dashboard({ session, refreshSession }: { session: NonNullable<Session>;
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [agentAccess, setAgentAccess] = useState<{ api_key: string; skill_md: string } | null>(null);
-  const [apiKeys, setApiKeys] = useState<Array<{ id: string; name: string | null; start: string | null; enabled: boolean; createdAt: string }>>([]);
-  const [webhooks, setWebhooks] = useState<Array<{ id: string; url: string; eventTypes: string[] }>>([]);
+  const [createdKey, setCreatedKey] = useState<{ key: string; scope: string; account_id: string | null } | null>(null);
+  const [apiKeys, setApiKeys] = useState<Array<{ id: string; name: string | null; start: string | null; enabled: boolean; createdAt: string; scope: string; account_id: string | null }>>([]);
+  const [webhooks, setWebhooks] = useState<Array<{ id: string; url: string; description: string | null; enabled: boolean; eventTypes: string[] }>>([]);
+  const [webhookEventTypes, setWebhookEventTypes] = useState<string[]>([]);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -91,19 +92,21 @@ function Dashboard({ session, refreshSession }: { session: NonNullable<Session>;
   const [actionResult, setActionResult] = useState<unknown>(null);
 
   const load = useCallback(async () => {
-    const [response, hooks, keys, deliveryResponse, actionResponse] = await Promise.all([
+    const [response, hooks, keys, deliveryResponse, actionResponse, eventTypeResponse] = await Promise.all([
       request<{ data: Account[] }>('/v1/accounts'),
-      request<{ data: Array<{ id: string; url: string; eventTypes: string[] }> }>('/v1/webhook-endpoints'),
-      request<{ apiKeys: Array<{ id: string; name: string | null; start: string | null; enabled: boolean; createdAt: string }> }>('/api/auth/api-key/list'),
+      request<{ data: Array<{ id: string; url: string; description: string | null; enabled: boolean; eventTypes: string[] }> }>('/v1/webhook-endpoints'),
+      request<{ data: Array<{ id: string; name: string | null; start: string | null; enabled: boolean; createdAt: string; scope: string; account_id: string | null }> }>('/v1/api-keys'),
       request<{ data: Delivery[] }>('/v1/webhook-deliveries'),
       request<{ data: BaileysAction[] }>('/v1/baileys-actions'),
+      request<{ data: string[] }>('/v1/webhook-event-types'),
     ]);
     setAccounts(response.data);
     setSelected((current) => current ?? response.data[0]?.id ?? null);
     setWebhooks(hooks.data);
-    setApiKeys(keys.apiKeys);
+    setApiKeys(keys.data);
     setDeliveries(deliveryResponse.data);
     setBaileysActions(actionResponse.data);
+    setWebhookEventTypes(eventTypeResponse.data);
   }, []);
 
   useEffect(() => { void load().catch((nextError) => setError(String(nextError))); }, [load]);
@@ -165,28 +168,28 @@ function Dashboard({ session, refreshSession }: { session: NonNullable<Session>;
     if (!selected) return;
     const form = new FormData(event.currentTarget);
     await action(async () => {
-      const response = await request<{ code?: string }>(`/v1/accounts/${selected}/pair/code`, { method: 'POST', body: JSON.stringify({ phone_number: form.get('phone_number') }) });
-      setNotice(response.code ? `Enter pairing code ${response.code} in WhatsApp.` : 'Pairing code request queued.');
+      const response = await request<{ status: string; result?: { code?: string } }>(`/v1/accounts/${selected}/pair/code`, { method: 'POST', body: JSON.stringify({ phone_number: form.get('phone_number') }) });
+      setNotice(response.result?.code ? `Enter pairing code ${response.result.code} in WhatsApp.` : `Pairing code request ${response.status}.`);
     });
   }
 
-  async function mintAgentAccess(event: FormEvent<HTMLFormElement>) {
+  async function createApiKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     await action(async () => {
-      const response = await request<{ api_key: string; skill_md: string }>('/v1/agent-access', {
-        method: 'POST', body: JSON.stringify({ name: form.get('name'), account_ids: selected ? [selected] : undefined }),
+      const response = await request<{ key: string; scope: string; account_id: string | null }>('/v1/api-keys', {
+        method: 'POST', body: JSON.stringify({ name: form.get('name'), scope: 'connection', account_id: selected }),
       });
-      setAgentAccess(response);
-      setNotice('Agent key created. It is shown once.');
+      setCreatedKey(response);
+      setNotice('Connection API key created. It is shown once.');
       await load();
     });
   }
 
   async function revokeKey(keyId: string) {
     await action(async () => {
-      await request('/api/auth/api-key/delete', { method: 'POST', body: JSON.stringify({ keyId }) });
-      setAgentAccess(null);
+      await request(`/v1/api-keys/${keyId}`, { method: 'DELETE' });
+      setCreatedKey(null);
       setNotice('API key revoked.');
       await load();
     });
@@ -197,12 +200,31 @@ function Dashboard({ session, refreshSession }: { session: NonNullable<Session>;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     await action(async () => {
+      const allEvents = form.get('all_events') === 'on';
+      const eventTypes = form.getAll('event_type').map(String);
+      if (!allEvents && !eventTypes.length) throw new Error('Select at least one event or choose all events');
       const response = await request<{ secret: string }>('/v1/webhook-endpoints', {
-        method: 'POST', body: JSON.stringify({ url: form.get('url'), event_types: [] }),
+        method: 'POST', body: JSON.stringify({ url: form.get('url'), description: form.get('description') || undefined, event_types: allEvents ? [] : eventTypes }),
       });
       setNotice(`Webhook created. Copy its one-time signing secret now: ${response.secret}`);
       await load();
       formElement.reset();
+    });
+  }
+
+  async function deleteWebhook(endpointId: string) {
+    await action(async () => {
+      await request(`/v1/webhook-endpoints/${endpointId}`, { method: 'DELETE' });
+      setNotice('Webhook endpoint deleted.');
+      await load();
+    });
+  }
+
+  async function replayDelivery(deliveryId: string) {
+    await action(async () => {
+      await request(`/v1/webhook-deliveries/${deliveryId}/replay`, { method: 'POST', body: '{}' });
+      setNotice('Webhook delivery queued for replay.');
+      await load();
     });
   }
 
@@ -289,17 +311,17 @@ function Dashboard({ session, refreshSession }: { session: NonNullable<Session>;
             <form className="inline-form" onSubmit={pairCode}><input name="phone_number" placeholder="+1 555 123 4567" required /><button disabled={!selected}>Get pairing code</button></form>
           </section>
           <section className="panel">
-            <div className="panel-head"><div><p className="eyebrow">Agent access</p><h2>Mint a scoped key</h2></div></div>
-            <p className="muted">The generated skill carries a key restricted to the selected WhatsApp number. The key is stored hashed and shown once.</p>
-            <form className="stack-form" onSubmit={mintAgentAccess}><input name="name" defaultValue="My WhatsApp agent" required /><button className="primary" disabled={!selected}>Create key + SKILL.md</button></form>
-            {agentAccess && <div className="secret-box"><code>{agentAccess.api_key}</code><div><button onClick={() => navigator.clipboard.writeText(agentAccess.api_key)}>Copy key</button><button onClick={() => { const url = URL.createObjectURL(new Blob([agentAccess.skill_md], { type: 'text/markdown' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'SKILL.md'; anchor.click(); URL.revokeObjectURL(url); }}>Download skill</button></div></div>}
-            <div className="key-list">{apiKeys.map((key) => <div className="key-row" key={key.id}><div><strong>{key.name ?? 'Unnamed key'}</strong><code>{key.start ?? 'wag_…'}</code></div><button onClick={() => revokeKey(key.id)}>Revoke</button></div>)}</div>
+            <div className="panel-head"><div><p className="eyebrow">API access</p><h2>Create a connection key</h2></div></div>
+            <p className="muted">This key is restricted to the selected WhatsApp number. Store it once, then give it to the agent with the generic SKILL.md.</p>
+            <form className="stack-form" onSubmit={createApiKey}><input name="name" defaultValue="My WhatsApp agent" required /><button className="primary" disabled={!selected}>Create connection key</button></form>
+            {createdKey && <div className="secret-box"><code>{createdKey.key}</code><div><button onClick={() => navigator.clipboard.writeText(createdKey.key)}>Copy key</button><a href="/v1/skill.md" download="SKILL.md"><button type="button">Download generic skill</button></a></div></div>}
+            <div className="key-list">{apiKeys.map((key) => <div className="key-row" key={key.id}><div><strong>{key.name ?? 'Unnamed key'}</strong><code>{key.start ?? 'wag_…'} · {key.scope}{key.account_id ? ` · ${key.account_id}` : ''}</code></div><button onClick={() => revokeKey(key.id)}>Revoke</button></div>)}</div>
           </section>
           <section className="panel wide">
             <div className="panel-head"><div><p className="eyebrow">Event delivery</p><h2>Webhooks</h2></div><span>{webhooks.length} endpoints</span></div>
-            <form className="inline-form" onSubmit={createWebhook}><input name="url" type="url" placeholder="https://agent.example.com/webhooks/whatsapp" required /><button>Create endpoint</button></form>
-            <div className="rows">{webhooks.map((hook) => <div className="row" key={hook.id}><span>{hook.url}</span><code>{hook.id}</code></div>)}{!webhooks.length && <p className="empty">All message, connection, group, contact, chat, and call events can be signed and delivered here.</p>}</div>
-            <div className="delivery-strip">{deliveries.slice(0, 8).map((delivery) => <div className="delivery" key={delivery.id}><span className={`delivery-state ${delivery.status}`}>{delivery.status}</span><strong>{delivery.event.type}</strong><small>{delivery.lastStatusCode ?? `attempt ${delivery.attemptCount}`}</small></div>)}</div>
+            <form className="stack-form" onSubmit={createWebhook}><input name="url" type="url" placeholder="https://agent.example.com/webhooks/whatsapp" required /><input name="description" placeholder="Description (optional)" /><label><input name="all_events" type="checkbox" /> Subscribe to all current and future events</label><div className="event-picker">{webhookEventTypes.map((type) => <label key={type}><input type="checkbox" name="event_type" value={type} />{type}</label>)}</div><button>Create endpoint</button></form>
+            <div className="rows">{webhooks.map((hook) => <div className="row" key={hook.id}><span>{hook.description || hook.url}<small>{hook.url} · {hook.eventTypes.length ? `${hook.eventTypes.length} events` : 'all events'}</small></span><button onClick={() => deleteWebhook(hook.id)}>Delete</button></div>)}{!webhooks.length && <p className="empty">Create an endpoint and explicitly select the normalized WhatsApp events it should receive.</p>}</div>
+            <div className="delivery-strip">{deliveries.slice(0, 8).map((delivery) => <div className="delivery" key={delivery.id}><span className={`delivery-state ${delivery.status}`}>{delivery.status}</span><strong>{delivery.event.type}</strong><small>{delivery.lastStatusCode ?? `attempt ${delivery.attemptCount}`}</small>{delivery.status !== 'delivered' && <button onClick={() => replayDelivery(delivery.id)}>Replay</button>}</div>)}</div>
           </section>
           <section className="panel">
             <div className="panel-head"><div><p className="eyebrow">Live API</p><h2>Send a message</h2></div></div>

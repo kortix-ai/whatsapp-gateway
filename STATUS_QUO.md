@@ -1,12 +1,12 @@
-# WhatsApp Gateway: Engineering Status Quo and Product Refactor Handoff
+# WhatsApp Gateway: Engineering Status Quo and Design Handoff
 
-Status: canonical handoff
+Status: canonical implementation and design-engineering handoff
+
+Updated: 2026-07-21
 
 Repository: `/Users/markokraemer/Projects/kortix/whatsapp-gateway`
 
-Current branch: `main`
-
-Baseline implementation commit: `a200625`
+Branch: `main`
 
 Local application: `http://localhost:8080`
 
@@ -14,512 +14,309 @@ Scalar API reference: `http://localhost:8080/docs`
 
 OpenAPI 3.1: `http://localhost:8080/openapi.json`
 
-Generic skill: `http://localhost:8080/v1/skill.md`
+Generic agent skill: `http://localhost:8080/v1/skill.md`
 
-This document is the complete handoff for the current engineering implementation and the next design-engineering/API simplification pass. Read it before changing the gateway.
+Compact capability map: `http://localhost:8080/v1/capabilities.md`
 
-## 1. Product goal
+This document describes what exists now. It is not a backlog. The backend, API, CLI, persistence, self-hosting stack, standard API-key model, and functional web console are implemented. The remaining product work is the from-scratch Tailwind/shadcn design rewrite and real-device acceptance testing with a user-owned WhatsApp account.
 
-The product is managed WhatsApp for agents.
+## 1. Product contract
 
-A user brings an existing, already-registered WhatsApp account, links it through WhatsApp’s Linked Devices flow, and receives a reliable API/CLI surface through which an agent can operate that WhatsApp account as a full personal WhatsApp client.
+WhatsApp Gateway is an open-source, self-hosted managed Baileys service for developers and AI agents.
 
-The target agent must be able to:
+A user brings an existing WhatsApp account, creates a named connection, pairs it through WhatsApp Linked Devices, and gives an agent a connection-scoped API key. The agent can then use the account through REST, curl, `wag`, signed webhooks, and the credential-free `SKILL.md`.
 
-- List connected WhatsApp accounts.
-- Inspect connection and pairing state.
-- List chats and identify unread chats.
-- List messages, including recent and unread inbound messages.
-- Search/resolve contacts, chats, groups, phone numbers, and JIDs before acting.
-- Send text and every richer WhatsApp message type supported by Baileys.
-- Mark messages read and send receipts.
-- Create and manage groups.
-- Manage contacts, chats, presence, profile, privacy, blocklist, communities, newsletters/channels, WhatsApp Business features, and supported call actions.
-- Receive new messages and all other normalized WhatsApp events immediately.
-- Perform multi-step workflows through curl, a future CLI, or another agent runtime.
-- Survive API, worker, and webhook-process restarts without losing the linked device or durable work.
+The gateway supports:
 
-Buying a phone number and registering a brand-new WhatsApp account are explicitly future work. The current system only links an existing registered WhatsApp account.
+- Multiple users and multiple WhatsApp connections in one deployment.
+- Private allowlisted signup by default.
+- One API key for one connection, recommended for agents.
+- Account-wide keys for trusted administrative tooling.
+- Persisted reads for chats, contacts, groups, messages, unread state, commands, and events.
+- Durable idempotent mutations.
+- 119 managed high-level Baileys socket actions.
+- Signed, retrying, replayable webhooks.
+- A browserless always-on worker model.
+- VPS deployment with Docker Compose, PostgreSQL, Caddy, and automatic HTTPS.
 
-## 2. Important product decisions for the next pass
+The gateway links existing registered WhatsApp accounts. Buying a number and registering a fresh WhatsApp account are intentionally outside the current product boundary.
 
-### Remove the bespoke “agent access” concept
+## 2. Non-negotiable architecture decisions
 
-The current `POST /v1/agent-access` endpoint mints an account-scoped Better Auth key and returns a personalized `SKILL.md`. This abstraction is confusing and should be removed from the target public product.
+### No raw WhatsApp WebSocket proxy
 
-Target behavior:
+Baileys owns a long-lived encrypted WhatsApp Web protocol connection. It is not a safe tenant JSON-RPC socket. The raw socket would bypass Signal/Noise state, auth mutation, durable commands, account authorization, leases, input normalization, auditability, and version insulation.
 
-- API keys are simply API keys.
-- Users create, scope, expire, inspect, and revoke them from the API Keys page.
-- Better Auth’s API-key plugin remains the authentication implementation.
-- The full plaintext key is shown once.
-- The generic skill never embeds a credential.
-- A user gives an agent the generic skill plus a scoped key through their normal secret-delivery mechanism.
-- Remove `POST /v1/agent-access` after the UI, tests, OpenAPI, smoke flow, and skill no longer depend on it.
-- Replace the current agent-access UI with a normal “Create API key” flow.
+The gateway therefore owns every Baileys socket. External clients use:
 
-Do not remove API-key authentication itself. Programmatic agent access remains a core requirement.
+1. Account and pairing control routes.
+2. Persisted read routes.
+3. Durable managed command routes.
+4. Normalized events and signed webhooks.
 
-### Make the generic skill token-efficient and contract-driven
+### One number is one session, not one container
 
-The generic `GET /v1/skill.md` should explain how to operate the gateway without duplicating a huge stale manual API reference.
+One WhatsApp connection equals one Baileys WebSocket session. A worker process multiplexes sessions. `WORKER_CAPACITY` defaults to 25. PostgreSQL leases guarantee that exactly one worker replica owns a connection at a time.
 
-It should point an agent to:
+Approximate active capacity:
 
-1. `GET /openapi.json` for the complete REST contract.
-2. `GET /v1/baileys-actions` for every managed Baileys action, its exact method, argument order, description, and required permission.
-3. The durable-command result contract.
-4. The normalized event/webhook contract.
-5. Safety rules for recipients, groups, disconnects, and secrets.
+```text
+worker replicas × WORKER_CAPACITY
+```
 
-Recommended token-friendly additions:
+Scale by adding worker replicas and sizing PostgreSQL. Do not deploy one Docker container per phone number.
 
-- `GET /v1/capabilities.md`: compact Markdown grouped by account reads, commands, webhooks, and action categories.
-- Or `GET /v1/capabilities.json`: a compact machine-readable projection derived from OpenAPI plus the action registry.
-- Generate these representations from source-of-truth registries. Do not maintain a second handwritten route list.
+### Prisma/PostgreSQL end to end
 
-The skill should teach the workflow, not carry a secret or repeat every OpenAPI schema.
+There is no Drizzle, SQLite, direct `pg` persistence, multi-file Baileys auth state, browser fleet, or WhatsApp Cloud API in this repository. Prisma and PostgreSQL are the only persistence layer.
 
-### Do not proxy the raw WhatsApp WebSocket
+## 3. Technology stack
 
-Baileys opens a long-lived encrypted WhatsApp Web protocol WebSocket. That socket is not a general JSON-RPC API that can be safely forwarded to a tenant or agent.
-
-Raw proxying would expose or bypass:
-
-- WhatsApp protocol nodes and low-level transport frames.
-- Signal/Noise cryptographic state.
-- Authentication credential mutation.
-- Retry and message-key state.
-- The one-worker lease invariant.
-- Tenant/account authorization.
-- Durable command recording and recovery.
-- Input normalization and JID handling.
-- Auditability and permission enforcement.
-- Upgrade insulation when Baileys/WhatsApp changes.
-
-The gateway must own the Baileys socket. External clients should use gateway RPC/REST and normalized gateway events.
-
-If streaming is needed, add a gateway-owned SSE or WebSocket endpoint that emits normalized, persisted `InboundEvent` records. Do not expose raw Baileys/WhatsApp frames.
-
-### Keep reads, control plane, and commands distinct
-
-One generic action endpoint can cover most live Baileys operations, but it cannot replace the whole API.
-
-The target API has four necessary planes:
-
-1. Control plane: create/link/disconnect accounts and inspect connection state.
-2. Read model: query persisted chats, contacts, groups, messages, unread state, events, and command results even when the WhatsApp socket is temporarily offline.
-3. Command plane: durably invoke managed Baileys operations.
-4. Event plane: signed webhooks and a future normalized stream/poll surface.
-
-The read model is essential. Baileys is event-driven and does not provide a durable “list all local messages/unread history” server database for an external agent. The gateway persists this state in PostgreSQL and exposes it through query endpoints.
-
-### Consolidate duplicate mutation routes carefully
-
-The current API has both dedicated convenience mutations and the generic managed-action endpoint.
-
-Examples:
-
-- `POST /v1/accounts/{accountId}/messages` overlaps `messages.send`.
-- `POST /v1/accounts/{accountId}/groups` overlaps `groups.create`.
-- Group update/participant routes overlap managed group actions.
-
-Target recommendation:
-
-- Keep the generic durable action command surface as the complete mutation/control escape hatch.
-- Keep persisted read routes.
-- Keep account/pairing/session routes.
-- Keep webhook routes.
-- Deprecate overlapping convenience mutations only after the CLI, skill, examples, and E2E tests use the managed-action surface successfully.
-- It is acceptable to retain a very small set of ergonomic aliases such as `messages.send` if they materially improve common curl use. They must delegate to the same command implementation and share one result contract.
-- Never keep two implementations of the same WhatsApp operation.
-
-## 3. Current stack
-
-- TypeScript.
-- Node `>=22.19`.
+- TypeScript and Node `>=22.19`.
 - Hono `4.12.31`.
-- React `19.2.4`.
-- Vite `7.3.1`.
-- PostgreSQL 17.
-- Prisma `6.19.3` end to end.
+- React `19.2.4` and Vite `7.3.1`.
+- Prisma `6.19.3` and PostgreSQL 17.
 - Better Auth `1.6.23` with Prisma adapter.
 - Better Auth API-key plugin `1.6.23`.
 - Baileys `7.0.0-rc13`.
 - Scalar Hono API Reference `0.11.11`.
-- Zod `4.3.6`.
-- Undici for secured webhook delivery.
-- Vitest, ESLint, TypeScript, and tsup.
+- Zod, Undici, Pino, Vitest, ESLint, TypeScript, and tsup.
 
-There is no Drizzle, SQLite, direct `pg`, browser automation process, or WhatsApp Cloud API in this project.
-
-## 4. Runtime architecture
+## 4. Runtime topology
 
 One Docker image supports four roles:
 
-### API role
+### API
 
-- Hono REST API.
-- Better Auth routes and browser session handling.
-- API-key authorization.
-- React/Vite production assets.
-- OpenAPI document.
-- Scalar reference.
-- Generic skill.
+- Hono API and Better Auth.
+- Account- and connection-scoped API-key authorization.
+- Static React console.
+- OpenAPI, Scalar, capability map, and skill.
 
-### Worker role
+### Baileys worker
 
-- Owns long-lived Baileys WebSocket sessions.
-- Acquires one renewable PostgreSQL lease per WhatsApp account.
-- Capacity is configurable; local default is 25 accounts per worker.
-- Polls for accounts that are pairing, reconnecting, or have stored credentials.
-- Starts/stops Baileys sessions as leases are gained/lost.
-- Processes durable outbound commands for owned accounts.
-- Persists incoming WhatsApp state and normalized events.
+- Acquires renewable per-account leases.
+- Opens and owns long-lived Baileys sessions.
+- Persists auth changes and synchronized WhatsApp state.
+- Claims and executes durable commands.
+- Emits normalized durable events.
 
-### Webhook role
+### Webhook worker
 
-- Claims pending/retrying webhook deliveries.
-- Signs each request.
-- Retries with exponential backoff and jitter.
-- Marks permanent exhaustion as `dead_letter`.
-- Recovers deliveries left in `processing` by a crashed worker.
-- Revalidates destination DNS at delivery time.
+- Claims pending/retrying deliveries.
+- Revalidates DNS and blocks unsafe destinations.
+- Signs requests with HMAC-SHA256.
+- Retries with backoff/jitter.
+- Dead-letters exhausted deliveries and supports replay.
 
-### Migration role
+### Migration job
 
-- Runs `prisma migrate deploy` before the application roles start.
+- Runs `prisma migrate deploy` before long-running services start.
 
-### Local Docker topology
+Local Compose exposes API `8080` and PostgreSQL `54329`. The production Compose stack keeps PostgreSQL private and places Caddy in front of the API on ports 80/443.
 
-- API: host port `8080`.
-- PostgreSQL: host port `54329`.
-- Persistent named PostgreSQL volume.
-- API, worker, and webhooks restart unless stopped.
-- No inbound WhatsApp-facing endpoint is required; Baileys only needs outbound internet access.
+WhatsApp requires outbound internet only. There is no public WhatsApp-facing callback endpoint.
 
-## 5. Persistence and tenancy
+## 5. Persistent models
 
-PostgreSQL is the durable source of truth.
+Better Auth:
 
-### Better Auth models
+- `User`, `Session`, `Account`, `Verification`, `Apikey`.
 
-- `User`
-- `Session`
-- `Account`
-- `Verification`
-- `Apikey`
+Gateway:
 
-### Gateway models
-
-- `Tenant`: one owner-backed workspace today.
-- `WhatsAppAccount`: display name, phone, JID, status, pairing state, errors, timestamps.
-- `WhatsAppAccountLease`: worker ownership, generation, heartbeat, lease expiry.
+- `Tenant`: owner-backed workspace.
+- `WhatsAppAccount`: named connection, phone/JID, status, pairing state, timestamps, errors.
+- `WhatsAppAccountLease`: worker ownership and expiry.
 - `WhatsAppAuthCredential`: encrypted Baileys credentials.
-- `WhatsAppSignalKey`: encrypted individual Signal keys.
-- `WhatsAppChat`: synchronized chat state and unread count.
-- `WhatsAppContact`: synchronized contact/JID/phone state.
-- `WhatsAppGroup`: synchronized group metadata and participants.
-- `WhatsAppMessage`: normalized searchable message fields plus full payload.
-- `AccountEventSequence`: monotonically increasing per-account event counter.
-- `InboundEvent`: durable ordered normalized WhatsApp/gateway event.
-- `OutboundCommand`: durable command, claim, result, error, retry state.
-- `WebhookEndpoint`: encrypted signing secret, URL, description, enabled state, subscriptions.
-- `WebhookDelivery`: per-endpoint delivery attempts and response/error state.
-- `AuditLog`: actor/resource/action record.
+- `WhatsAppSignalKey`: encrypted per-key Signal state.
+- `WhatsAppChat`: name, unread count, archive state, metadata.
+- `WhatsAppContact`: name, notify name, phone, JID, metadata.
+- `WhatsAppGroup`: subject, owner, participants, metadata.
+- `WhatsAppMessage`: normalized searchable fields and full JSON-compatible payload.
+- `AccountEventSequence`: per-account monotonic sequence.
+- `InboundEvent`: durable ordered normalized event.
+- `OutboundCommand`: idempotent durable mutation and terminal result.
+- `WebhookEndpoint`: event and connection subscriptions plus encrypted signing secret.
+- `WebhookDelivery`: attempts, response/error state, retry/dead-letter state.
+- `AuditLog`: actor/resource/action history.
 
-The exact schema is `prisma/schema.prisma`.
+Six migrations currently deploy the schema, pairing expiry, idempotency, pairing-event secret scrubbing, and webhook connection scope.
 
-## 6. Security implementation
+## 6. Authentication, allowlist, and API keys
 
-### Baileys state encryption
+### Signup allowlist
 
-- Credentials and Signal keys are stored in PostgreSQL, not local files.
-- Each value is encrypted with AES-256-GCM.
-- Auth state implements the Baileys auth interface directly.
-- Production must provide a unique `ENCRYPTION_KEY`.
+Private mode is enabled by default:
 
-### API keys
+```dotenv
+AUTH_ALLOWLIST_ENABLED=true
+ALLOWED_EMAILS=marko@kortix.ai
+```
 
-- Better Auth API keys use the `wag_` prefix.
-- Keys are hashed at rest.
-- Keys are revocable and expirable.
-- Rate limiting defaults to 600 requests per 60 seconds.
-- Permissions are resource/action scoped.
-- Metadata can scope a key to specific WhatsApp account IDs.
-- Browser API calls use the session cookie.
-- Programmatic calls accept `X-API-Key` or `Authorization: Bearer wag_...`.
+Allowlisted emails are normalized case-insensitively. Non-allowlisted users cannot sign up, create a session, or use an existing key. Multiple emails are comma-separated.
 
-### Webhook security
+Open signup is an explicit operator choice:
 
-- Secrets are encrypted at rest and returned once at endpoint creation.
-- Signature: HMAC-SHA256 over `timestamp + "." + raw_body`.
-- Header: `X-WhatsApp-Signature: v1=<hex>`.
-- Other headers: event ID, delivery ID, timestamp.
-- Private, loopback, link-local, and metadata destinations are blocked by default.
-- DNS is validated both at creation and delivery.
-- Undici connects to the validated address to reduce DNS-rebinding risk.
-- Redirects are not followed.
+```dotenv
+AUTH_ALLOWLIST_ENABLED=false
+```
 
-### Secret UI rules
+### Standard API keys
 
-Never log, persist, commit, add to URLs, or place in transient toasts:
+The bespoke Agent Access endpoint and personalized skill were removed. API keys are standard Better Auth API keys managed by:
 
-- API keys.
-- Webhook signing secrets.
-- Pairing codes.
-- QR data URLs.
-- Baileys credentials or Signal keys.
+- `GET /v1/api-keys`
+- `POST /v1/api-keys`
+- `DELETE /v1/api-keys/{keyId}`
 
-## 7. Baileys connection and pairing
+Only a signed-in browser owner can list, mint, or revoke keys.
 
-### Connection behavior
+Scopes:
 
-- Uses `makeWASocket` directly.
-- Uses Baileys’ package-locked default protocol version; it does not call `fetchLatestBaileysVersion()`.
-- Identifies as an Ubuntu Chrome linked device.
-- Does not force online presence on connect.
-- Requests full history synchronization.
-- Persists every credential update.
+- `connection`: exactly one `account_id`; recommended for an agent.
+- `account`: every current and future connection owned by the user.
 
-### QR pairing
+Keys begin with `wag_`, are hashed at rest, rate-limited, permission-aware, expirable, revocable, and returned in plaintext once. Programmatic requests accept `X-API-Key` and `Authorization: Bearer wag_...`.
 
-- `POST /v1/accounts/{accountId}/pair/qr` sets pairing mode and a five-minute expiry.
-- Worker opens the Baileys connection.
-- Every new Baileys QR frame replaces the stored QR.
-- QR is generated at 384 px with a four-module quiet zone.
-- UI/status clients always receive the newest available QR.
-- Unregistered auth state is deleted when pairing expires.
+Connection scope is enforced on account lists, account reads, persisted state, commands, events, mutations, webhook endpoints, and webhook deliveries. A connection key cannot create another connection or retarget a webhook. An out-of-scope account, command, endpoint, or delivery returns 404.
 
-### Phone pairing code
+Pairing material is not returned by general status or durable events to an API key. It is available only to the signed-in owner or from an explicit authorized pairing operation.
 
-- `POST /v1/accounts/{accountId}/pair/code` normalizes the phone to digits.
-- The worker waits until the connection transport is ready before requesting the code.
-- Pairing code is stored temporarily and returned through authorized pairing state.
-- Attempts expire and clear unregistered auth state.
+## 7. Baileys lifecycle and pairing
 
-### Open/close behavior
+The worker calls `makeWASocket` directly with encrypted Prisma-backed auth state. It uses Baileys' installed protocol behavior, identifies as Ubuntu Chrome, does not force online presence, and requests full history synchronization.
 
-- On open, account status becomes `connected`; phone/JID and last-connected time are stored; pairing secrets are cleared.
-- On close, logged-out sessions clear stored auth and become `disconnected`.
-- Non-logout closes become `reconnecting` and are eligible for lease/session restart.
-- Connection events are durably emitted.
+### QR
+
+`POST /v1/accounts/{accountId}/pair/qr` starts a five-minute Linked Devices attempt and returns a 384×384 PNG data URL. Repeating the explicit operation during an active attempt returns the current unexpired QR instead of clearing it. The `wag pair qr` command retries the explicit operation and writes the PNG to disk.
+
+### Phone code
+
+`POST /v1/accounts/{accountId}/pair/code` normalizes the number and queues `requestPairingCode` after the transport is ready.
+
+### Security
+
+- General API-key status never contains `qr_data_url` or `pairing_code`.
+- Pairing events retain lifecycle metadata only, never the QR/code.
+- An upgrade migration removes QR/code fields from older durable events.
+- Pairing expires after the configured TTL and clears unregistered auth state.
+- Successful open stores JID/phone, clears pairing state, and marks connected.
+- Logout clears linked-device auth.
+- Recoverable closes become reconnecting and are leased again.
 
 ## 8. Synchronized WhatsApp state
 
-The worker listens to Baileys events and persists:
+The worker persists:
 
-- Initial messaging history.
-- Chat upserts, updates, deletes, and lock state.
-- Contact upserts and updates.
-- Message creation, updates, deletion, media updates, reactions, and receipts.
-- Group upserts, metadata changes, participant changes, join requests, and member tags.
-- Calls.
-- Presence.
-- Blocklist changes.
-- Labels.
-- Newsletter events.
-- Settings, LID mapping, history status, and message capping.
+- Initial history and history status.
+- Chat upserts, updates, deletes, locks, archive state, and unread counts.
+- Contacts and LID mappings.
+- Messages, updates, deletes, media refresh, reactions, receipts, and capping.
+- Groups, participants, join requests, and member tags.
+- Calls, presence, blocklist, labels, settings, and newsletter events.
 
-Messages store:
+Read filters:
 
-- Gateway ID.
-- WhatsApp message ID.
-- Account and chat JID.
-- Sender JID.
-- Inbound/outbound direction.
-- Message type.
-- Extracted text/caption when available.
-- Full JSON-compatible Baileys payload.
-- Status and timestamp.
+- Chats: `q`, `unread`, `archived`.
+- Contacts and groups: `q`.
+- Messages: `chat_jid`, `unread`, `direction`, `status`, `type`, `sender_jid`, `since`, `before`, `limit`.
+- Events: `account_id`, `type`, `after_sequence`, `since`, `limit`.
 
-Current read limitations that matter to an agent:
+Unread message filtering resolves chats with a positive unread count and returns inbound messages from those chats.
 
-- Messages support `chat_jid`, `before`, and `limit` but not explicit unread-only, direction, type, status, sender, or since filters.
-- Chats contain `unreadCount`, so an agent can identify unread chats and then fetch their messages, but this is inefficient.
-- There is no global event-read API or event stream.
-- There is no command-status read endpoint.
+## 9. Durable command contract
 
-These are priority API additions for reliable CLI/agent use.
+Every external mutation is inserted into `OutboundCommand` before execution. The owning worker claims it and persists completion or failure.
 
-## 9. Durable commands
+Command-producing requests accept `Idempotency-Key` up to 200 characters. The uniqueness boundary is tenant plus key.
 
-All external WhatsApp mutations run through `OutboundCommand` records.
+- Same key and same work returns the original command.
+- Same key and different work returns HTTP 409.
+- Payload comparison is structural, not object-key-order dependent.
 
-Current behavior:
-
-- API enqueues a command in PostgreSQL.
-- The account-owning worker claims it.
-- Worker executes against its Baileys socket.
-- Result or error is persisted.
-- API waits up to a bounded time and returns the result when complete.
-- If still pending, API returns an accepted/pending response with a command ID.
-- Commands stuck in processing are returned to pending after worker timeout.
-- Completion/failure emits normalized events.
-
-Critical missing contract:
-
-- Add `GET /v1/commands/{commandId}` with tenant/account authorization.
-- Return one stable envelope for pending, processing, completed, and failed states.
-- Add optional client idempotency keys to command-producing requests.
-- Define retryability and surface `attempt_count`, `created_at`, `completed_at`, `result`, and safe error details.
-
-Without a command-status endpoint, an agent cannot reliably follow every asynchronous action to completion.
-
-## 10. Managed Baileys surface
-
-`GET /v1/baileys-actions` returns every managed high-level action. 119 actions are currently registered.
-
-`POST /v1/accounts/{accountId}/actions/{action}` accepts:
+The stable mutation response is:
 
 ```json
 {
-  "args": []
+  "command_id": "cmd_...",
+  "account_id": "wa_...",
+  "type": "socket.action",
+  "status": "pending | processing | completed | failed",
+  "result": {},
+  "error": null,
+  "attempt_count": 1,
+  "idempotency_key": "client-operation-id",
+  "created_at": "...",
+  "updated_at": "...",
+  "completed_at": "..."
 }
 ```
 
-It verifies:
+Pending/processing responses use HTTP 202. Completed and failed terminal command envelopes use HTTP 200 so clients can always recover the durable ID and inspect the business outcome.
 
-- Tenant/account access.
-- Action existence.
-- The action-specific permission.
-- Durable command execution.
+`GET /v1/commands/{commandId}?wait_seconds=30` reads or long-polls the authorized command.
 
-### Can this send everything?
+## 10. Managed Baileys surface
 
-Yes, within the high-level content and methods supported by the installed Baileys version.
+`GET /v1/baileys-actions` returns 119 registered operations with:
 
-`messages.send` maps to Baileys `sendMessage(jid, content, options?)` and can carry text, media, contacts, locations, reactions, polls, events, buttons/lists where supported, stickers, and other supported message content.
+- Public action name.
+- Exact installed Baileys socket method.
+- Ordered argument description.
+- Human description.
+- Required resource/action permission.
 
-The gateway deliberately does not expose low-level transport, protocol, retry, raw Signal-state, or raw WebSocket primitives such as `sendNode`, `query`, direct relay/crypto mutation, or raw socket writes. Those are not normal user actions and would break gateway invariants.
+`POST /v1/accounts/{accountId}/actions/{action}` accepts `{"args":[]}` and executes through the durable command path.
 
-### Current action categories
+Coverage includes messages and rich content, receipts, history, presence, contacts, chats, profile, privacy, blocklist, groups, communities, newsletters/channels, WhatsApp Business, supported calls, bots, and account/app-state operations.
 
-- Messages: 10.
-- Presence: 2.
-- Contacts: 5.
-- Chats: 4.
-- Profile: 5.
-- Blocklist: 2.
-- Privacy: 11.
-- Groups: 20.
-- Communities: 23.
-- Newsletters/channels: 19.
-- WhatsApp Business: 12.
-- Calls: 2.
-- Bots: 1.
-- Account/app state: 3.
-
-The exact registry is `src/baileys/actions.ts`. Tests classify every callable Baileys socket member as managed, handled by a dedicated endpoint, or intentionally internal.
+Tests inspect the installed Baileys TypeScript socket declaration and require every callable method to be classified as managed, dedicated pairing/logout behavior, or intentionally internal. Raw transport, protocol, crypto, relay, retry, and Signal-state mutation primitives are intentionally private.
 
 ## 11. Event and webhook system
 
-### Event durability
+There are 36 normalized event types. Every event has a gateway ID, tenant/account ID, per-account sequence, type, timestamp, and JSON data.
 
-Every event receives:
+`GET /v1/webhook-event-types` is the event registry. Endpoint creation validates exact registry values.
 
-- Gateway event ID.
-- Tenant ID.
-- Account ID.
-- Monotonic per-account sequence.
-- Type.
-- Timestamp.
-- JSON data.
+Endpoint routes support list, create, detail, patch, and delete. Endpoints may target all tenant connections or explicit `account_ids`; a connection key is forced to its assigned connection. Delivery routes support connection-scoped filtered pagination, detail, and replay.
 
-The event and synchronized database change are committed before webhook delivery is queued where applicable.
+Subscriptions:
 
-### Current 36 event types
+- Empty `event_types`: all current and future events.
+- Non-empty `event_types`: exact selected events.
 
-Pairing and connection:
+Signatures:
 
-- `pairing.qr.updated`
-- `pairing.code.created`
-- `pairing.expired`
-- `connection.opened`
-- `connection.closed`
+```text
+input = timestamp + "." + raw_body
+X-WhatsApp-Signature: v1=<HMAC-SHA256 hex>
+```
 
-Messages and history:
+The secret is returned once and encrypted at rest. Headers also include event ID, delivery ID, and timestamp.
 
-- `message.created`
-- `message.updated`
-- `message.deleted`
-- `message.media.updated`
-- `message.reaction.updated`
-- `message.receipt.updated`
-- `message.capping.updated`
-- `history.synced`
-- `history.status.updated`
+Webhook URL security rejects credentials, unsafe protocols, loopback, private, link-local, and cloud-metadata targets. DNS is validated at creation and again during delivery; redirects are not followed.
 
-Chats, contacts, and presence:
+## 12. Public REST surface
 
-- `chat.updated`
-- `chat.deleted`
-- `chat.locked`
-- `contact.updated`
-- `presence.updated`
-- `lid_mapping.updated`
-
-Groups:
-
-- `group.updated`
-- `group.participants.updated`
-- `group.join_request.updated`
-- `group.member_tag.updated`
-
-Commands:
-
-- `command.completed`
-- `command.failed`
-
-Other:
-
-- `call.updated`
-- `settings.updated`
-- `blocklist.set`
-- `blocklist.updated`
-- `label.updated`
-- `label.association.updated`
-- `newsletter.reaction.updated`
-- `newsletter.view.updated`
-- `newsletter.participants.updated`
-- `newsletter.settings.updated`
-
-### Webhook subscriptions
-
-- Empty `event_types` means all current and future event types.
-- A non-empty array means only exact matching event types.
-- Enabled endpoints receive at-least-once delivery.
-- Delivery states include pending, processing, retrying, delivered, and dead letter.
-- Failed deliveries can be replayed.
-
-### Current webhook UI defect
-
-The current UI only asks for a URL and silently submits `event_types: []`. It does not let the user choose events, add a description, understand URL security, safely save the one-time secret, delete/manage endpoints, inspect a delivery, or replay it from a useful table.
-
-The refactor must provide explicit “All events” versus “Selected events,” a searchable categorized event picker, description, safe secret dialog, endpoint management, delivery table, filters, detail, and replay.
-
-### Webhook API gaps
-
-Current API supports list/create/delete endpoints and list/replay deliveries. Add as needed:
-
-- `GET /v1/webhook-event-types`
-- `GET /v1/webhook-endpoints/{endpointId}`
-- `PATCH /v1/webhook-endpoints/{endpointId}`
-- `GET /v1/webhook-deliveries/{deliveryId}`
-- Filters and pagination for delivery list.
-- Signing-secret rotation.
-
-## 12. Current REST surface
-
-### Public/system
+### System and discovery
 
 - `GET /health`
 - `GET /openapi.json`
 - `GET /docs`
 - `GET /v1/skill.md`
+- `GET /v1/capabilities.md`
 - `GET|POST /api/auth/*`
 
-### Account/control plane
+### API keys and catalogs
+
+- `GET /v1/api-keys`
+- `POST /v1/api-keys`
+- `DELETE /v1/api-keys/{keyId}`
+- `GET /v1/baileys-actions`
+- `GET /v1/webhook-event-types`
+
+### Accounts and pairing
 
 - `GET /v1/accounts`
 - `POST /v1/accounts`
@@ -529,529 +326,317 @@ Current API supports list/create/delete endpoints and list/replay deliveries. Ad
 - `POST /v1/accounts/{accountId}/pair/code`
 - `DELETE /v1/accounts/{accountId}/session`
 
-### Persisted reads
+### Reads and events
 
 - `GET /v1/accounts/{accountId}/chats`
 - `GET /v1/accounts/{accountId}/contacts`
 - `GET /v1/accounts/{accountId}/groups`
 - `GET /v1/accounts/{accountId}/messages`
+- `GET /v1/events`
+- `GET /v1/commands/{commandId}`
 
-### Convenience mutations, candidates for consolidation
+### Durable mutations
 
+- `POST /v1/accounts/{accountId}/actions/{action}`
 - `POST /v1/accounts/{accountId}/messages`
 - `POST /v1/accounts/{accountId}/groups`
 - `PATCH /v1/accounts/{accountId}/groups/{groupId}`
 - `POST /v1/accounts/{accountId}/groups/{groupId}/participants`
 - `DELETE /v1/accounts/{accountId}/groups/{groupId}/participants/{participantId}`
 
-### Complete managed action surface
-
-- `GET /v1/baileys-actions`
-- `POST /v1/accounts/{accountId}/actions/{action}`
+Convenience routes and the generic action route share the same command implementation and stable result contract.
 
 ### Webhooks
 
 - `GET /v1/webhook-endpoints`
 - `POST /v1/webhook-endpoints`
+- `GET /v1/webhook-endpoints/{endpointId}`
+- `PATCH /v1/webhook-endpoints/{endpointId}`
 - `DELETE /v1/webhook-endpoints/{endpointId}`
 - `GET /v1/webhook-deliveries`
+- `GET /v1/webhook-deliveries/{deliveryId}`
 - `POST /v1/webhook-deliveries/{deliveryId}/replay`
 
-### Current bespoke endpoint to remove
+The OpenAPI test reads every explicit Hono route and fails when a method/path is missing from the document.
 
-- `POST /v1/agent-access`
+## 13. `wag` CLI
 
-### Better Auth API-key routes
+The CLI is implemented in `src/cli.ts`, built to `dist/server/cli.js`, shipped with a Node shebang, and exposed as the `wag` npm bin.
 
-- Managed under `/api/auth/api-key/*`.
-- Current UI uses list and delete.
-- The next UI should use the normal API-key creation route instead of `POST /v1/agent-access`.
+Configuration:
 
-OpenAPI currently documents 28 explicit Hono operations across 24 paths. The route-coverage test verifies every explicit Hono operation appears in OpenAPI. The skill test verifies every custom `/v1` path appears in the served and installable skill.
+```bash
+export WHATSAPP_GATEWAY_URL=https://whatsapp.example.com
+export WHATSAPP_GATEWAY_API_KEY=wag_...
+```
 
-## 13. Target API for agent/CLI reliability
-
-The following is the recommended stable public shape after consolidation.
-
-### Authentication
-
-- Standard Better Auth API keys only.
-- One key format and permission model.
-
-### Accounts
-
-- List/create/get/status/pair/disconnect.
-
-### Read model
-
-- Chats with unread filtering.
-- Messages with chat, unread, direction, type, sender, status, since/before, and limit filters.
-- Contacts.
-- Groups.
-- Events with account, type, sequence/since, and cursor filtering.
-- Command status.
-
-### Commands
-
-- Action catalog.
-- One durable action execution endpoint.
-- Stable result envelope.
-- Idempotency keys.
-
-### Events
-
-- Webhooks.
-- Optional SSE/WebSocket stream of normalized durable events.
-- Cursor/resume by event sequence.
-- Never raw WhatsApp protocol frames.
-
-### Contract discovery
-
-- OpenAPI.
-- Compact capability representation.
-- Generic workflow-oriented skill.
-
-## 14. Future CLI contract
-
-A future CLI should be a thin client of the public API, not a second Baileys implementation.
-
-Illustrative commands:
+Implemented commands:
 
 ```text
 wag auth status
 wag accounts list
 wag accounts status <account>
-wag pair qr <account>
-wag chats list <account> --unread
-wag messages list <account> --chat <jid> --unread
+wag pair qr <account> --output pairing.png
+wag pair code <account> --phone <e164>
+wag chats list <account> --unread --search <text>
+wag messages list <account> --chat <jid> --unread --limit <n>
 wag messages send <account> --to <phone-or-jid> --text <text>
-wag messages read <account> --message <id>
-wag groups list <account>
+wag messages read <account> --message <gateway-message-id>
+wag groups list <account> --search <text>
 wag groups create <account> --subject <name> --participant <phone>...
 wag actions list --category privacy
 wag actions run <account> <action> --args '<json-array>'
 wag commands get <command-id> --wait
-wag events tail <account> --type message.created
+wag events tail <account> --type message.created --once
 wag webhooks list
 ```
 
-CLI requirements:
+Global options are `--base-url`, `--api-key`, and `--json`. Command mutations accept `--idempotency-key`. The CLI never implements Baileys itself and never prints the API key.
 
-- Reads `WHATSAPP_GATEWAY_API_KEY` and a base URL.
-- Never prints the key.
-- JSON output mode for agents.
-- Human table output mode for developers.
-- Stable exit codes.
-- `--wait` for durable commands.
-- Explicit confirmation for consequential human-mode actions; `--yes` for already-authorized automation.
-- No hidden local WhatsApp session or credentials.
+## 14. Skill and contract discovery
 
-## 15. Current frontend status
+`GET /v1/skill.md` and `skills/whatsapp-gateway/SKILL.md` are credential-free. They teach an agent to:
 
-Current files:
+1. Load `/v1/capabilities.md` for a compact route map.
+2. Load `/openapi.json` for exact schemas.
+3. Load `/v1/baileys-actions` for installed operations.
+4. Select an authorized connection.
+5. Read before acting when a destination is ambiguous.
+6. Use idempotency and poll durable commands.
+7. Keep keys, webhook secrets, and pairing material secret.
 
-- `src/web/main.tsx`: authentication, all dashboard data/state, polling, and every workflow in one component.
-- `src/web/styles.css`: entire hand-written visual system.
-- `src/web/index.html`: Vite shell.
+`scripts/validate-skill.mjs` validates portable skill frontmatter without relying on a machine-specific Codex path.
 
-Current features:
+## 15. Self-hosting and release assets
 
-- Sign up, sign in, sign out.
-- Number list/create/select.
+Included:
+
+- `Dockerfile`: shared production image.
+- `docker-compose.yml`: local PostgreSQL/API/worker/webhook/migration stack.
+- `docker-compose.production.yml`: private PostgreSQL plus Caddy HTTPS stack.
+- `.env.example`: local configuration.
+- `.env.production.example`: VPS configuration contract.
+- `deploy/Caddyfile`: automatic TLS and security headers.
+- `scripts/deploy-vps.sh`: validated deploy/update command.
+- `.github/workflows/ci.yml`: lint, types, tests, skill, build, packaging, Compose validation.
+- `.github/workflows/container.yml`: GHCR container build/publish workflow.
+- `LICENSE`: MIT.
+- `README.md`: operator, API, CLI, security, webhook, scaling, and development guide.
+
+Production deployment requires DNS, ports 80/443, generated secrets, and matching `POSTGRES_PASSWORD`/`DATABASE_URL`. PostgreSQL and Caddy data use named volumes. API, worker, webhook, and Caddy services restart automatically.
+
+Back up the PostgreSQL database/volume and `.env`. Losing `ENCRYPTION_KEY` makes stored linked-device auth unrecoverable.
+
+## 16. Current web console
+
+The current React console is functionally complete enough to operate the gateway:
+
+- Better Auth signup/sign-in/sign-out.
+- Create and select named connections.
 - QR and phone-code pairing.
 - Connection polling.
-- API-key mint through agent-access, list, copy, skill download, revoke.
-- Webhook create/list and small delivery strip.
-- Send text.
-- Create group.
-- Generic Baileys action explorer.
-- Recent synchronized messages.
+- Create/list/revoke connection API keys.
+- Download the generic skill separately.
+- Webhook URL, description, all-events mode, and individual event checkboxes.
+- Delete webhook endpoints and replay failed deliveries.
+- Send text, create groups, execute arbitrary managed actions.
+- View recent synchronized messages and groups.
 
-Current problems:
+It is not the final design. It remains one monolithic `src/web/main.tsx` with hand-written `src/web/styles.css`, weak navigation affordances, no routes/deep links, basic secret feedback, and limited table/detail/search UX.
 
-- The entire console is one long grid mixing global and account-scoped concerns.
-- No real routing or deep links.
-- The number row is technically a button, but selection is already active, has weak affordance, and does not navigate; clicking the only number appears to do nothing.
-- The webhook form cannot select events and has poor error/secret handling.
-- Raw JSON is displayed as success feedback.
-- No query cache or reusable domain architecture.
-- Missing filtering, searching, pagination, details, and management flows.
-- Custom global CSS and demo-card styling do not meet product quality.
+The reported non-clickable number problem is structural: the row is a button, but selection is local state, the only row is often already selected, and there is no URL/navigation change or strong active affordance. The redesign must replace this behavior, not merely restyle it.
 
-## 16. Design-engineering mandate
+## 17. Design-engineering mandate
 
-Reimplement the frontend from scratch with:
+Reimplement the console from scratch. Preserve the API contracts and backend invariants; do not port the old card grid.
+
+Required stack:
 
 - Tailwind CSS.
-- shadcn/ui/Radix primitives.
+- shadcn/ui and Radix primitives.
 - Lucide icons.
 - A real router.
-- TanStack Query or an equivalent robust server-state layer.
-- React Hook Form plus Zod for forms.
-- Reusable feature/domain components.
+- TanStack Query or equivalent server-state layer.
+- React Hook Form plus Zod.
 - Real browser E2E tests.
-
-Do not incrementally polish the old dashboard or preserve its card layout.
 
 Visual direction:
 
 - Calm developer infrastructure console.
-- Neutral surfaces.
-- Dense but legible.
-- WhatsApp green only as an earned accent.
-- Amber for pairing/retrying.
-- Red for errors, dead letter, and destructive actions.
-- Clear typography and table hierarchy.
-- Minimal shadow/decorative chrome.
-- No gratuitous gradients, glow, or pill overload.
+- Neutral surfaces and dense, legible hierarchy.
+- WhatsApp green only as an earned connected/success accent.
+- Amber for pairing/retrying and red for errors/destructive actions.
+- Minimal decorative chrome, shadow, gradients, glow, and pill use.
+- Strong keyboard focus, AA contrast, responsive navigation, and no 320 px overflow.
 
-## 17. Target information architecture
+Target routes:
 
 ```text
 /auth/sign-in
 /auth/sign-up
-
-/app
-  /numbers
-  /numbers/new
-  /numbers/:accountId
-    /overview
-    /pairing
-    /chats
-    /contacts
-    /groups
-    /messages
-    /actions
-  /webhooks
-  /webhooks/new
-  /webhooks/:endpointId
-    /overview
-    /deliveries
-  /api-keys
-  /developer
+/app/numbers
+/app/numbers/new
+/app/numbers/:accountId/overview
+/app/numbers/:accountId/pairing
+/app/numbers/:accountId/chats
+/app/numbers/:accountId/contacts
+/app/numbers/:accountId/groups
+/app/numbers/:accountId/messages
+/app/numbers/:accountId/actions
+/app/webhooks
+/app/webhooks/new
+/app/webhooks/:endpointId/overview
+/app/webhooks/:endpointId/deliveries
+/app/api-keys
+/app/developer
 ```
 
-Global navigation:
+Required UX outcomes:
 
-- Numbers.
-- Webhooks.
-- API keys.
-- Developer.
-- API reference.
-- User menu/sign out.
+- Entire connection rows are obvious navigable links with URL-persisted selection.
+- Pairing has preparation, current QR/code, expiry countdown, retry, error, and connected states.
+- Webhook creation explicitly distinguishes all current/future events from selected events.
+- Event picker is searchable/categorized and sends exact `event_types`.
+- API keys have scope, expiry, permission presets/matrix, one-time secret dialog, and revoke confirmation.
+- Webhook signing secrets use a blocking one-time acknowledgement dialog, never a toast.
+- Chats/messages support search, unread filters, pagination, recipient resolution, and durable command feedback.
+- Groups support create, subject/description update, and participant administration with confirmation.
+- Action explorer loads the dynamic catalog, searches/filters it, validates JSON args, and renders the command envelope.
+- Developer view links OpenAPI, Scalar, skill, capabilities, CLI setup, curl auth, and webhook verification.
 
-Number sub-navigation:
-
-- Overview.
-- Pairing.
-- Chats.
-- Contacts.
-- Groups.
-- Messages.
-- Advanced actions.
-
-## 18. Required UX flows
-
-### Numbers
-
-- Number rows are obvious links/buttons with display name, formatted phone, status, and trailing affordance.
-- Entire row navigates to `/app/numbers/{accountId}/overview`.
-- URL preserves selection across reload/back/forward.
-- Search, status filters, and sorting.
-- Dedicated “Connect number” flow.
-- Clear empty/loading/error states.
-
-### Pairing
-
-- Create connection.
-- Choose QR or code.
-- Preparing state while a worker acquires the lease.
-- Fresh QR replacement and five-minute countdown.
-- Exact Linked Devices instructions.
-- Pairing-code one-time display and copy.
-- Connected success transition.
-- Expired/retry and connection-error states.
-- Never persist or log QR/code material.
-
-### Chats/messages/unread
-
-- Search chats and show unread counts.
-- Chat detail/message list with cursor pagination.
-- Clear inbound/outbound message treatment.
-- Resolve recipient through chats/contacts before send.
-- Text composer plus advanced rich-content JSON.
-- Durable pending/completed/failed action state.
-- Add backend unread/message filters rather than filtering an incomplete client page.
-
-### Contacts
-
-- Search name, notify name, phone, or JID.
-- Contact details and send action.
-- Advanced mutations use the managed-action surface.
-
-### Groups
-
-- Search/list/detail.
-- Create with contact picker and manual E.164/JID entry.
-- Update subject/description.
-- Add/remove/promote/demote participants.
-- Confirm consequential changes.
-
-### API keys
-
-- Replace Agent Access with standard Create API Key.
-- Name, account scope, expiry, rate-limit visibility, and permission presets/custom matrix.
-- One-time key dialog with copy and acknowledgement.
-- List prefix, scope, permissions, created/expiry state.
-- Revoke with confirmation.
-- Generic skill download is separate and never embeds the key.
-
-### Webhooks
-
-- Dedicated page and endpoint table.
-- Add endpoint with URL, description, and explicit All versus Selected events.
-- Searchable categorized 36-event picker.
-- Recommended preset: message created, connection opened/closed, command failed.
-- Safe one-time signing-secret dialog.
-- Explain public HTTPS and SSRF restrictions.
-- Endpoint details and lifecycle where backend supports it.
-- Delivery table with status, event, account, attempts, HTTP status, timestamps, retry/dead-letter information.
-- Delivery detail and replay.
-- Never silently submit all events.
-
-### Baileys actions
-
-- Fetch action registry dynamically.
-- Search by name/method/arguments/description.
-- Filter category and permission.
-- JSON array editor with validation.
-- Account context.
-- Consequential-action confirmation.
-- Structured result/pending/error viewer.
-
-### Developer
-
-- Gateway base URL.
-- OpenAPI link/download.
-- Scalar reference.
-- Generic skill download.
-- Capability/action catalog.
-- Authentication example.
-- Webhook signing example.
-
-## 19. Webhook creation specification
-
-The create request should be visibly constructed as:
-
-```json
-{
-  "url": "https://agent.example.com/webhooks/whatsapp",
-  "description": "Production agent ingress",
-  "event_types": [
-    "message.created",
-    "connection.opened",
-    "connection.closed"
-  ]
-}
-```
-
-Selection rules:
-
-- “All current and future events” sends `[]`.
-- “Selected events” sends exact selected strings.
-- Category-level and global select/clear.
-- Search event names/descriptions.
-- Display selected count.
-- Explain that selecting all current checkboxes is not identical to all future events.
-
-After creation, show the secret once in a blocking dialog with:
-
-- Copy secret.
-- Required signature headers.
-- HMAC input format.
-- Verification docs link/example.
-- “I stored this secret” acknowledgement.
-
-Never place the secret in a banner or toast.
-
-## 20. Suggested frontend structure
+Suggested source layout:
 
 ```text
 src/web/
   app.tsx
   main.tsx
   routes.tsx
-  styles.css
   components/
-    app-shell.tsx
-    page-header.tsx
-    status-badge.tsx
-    empty-state.tsx
-    error-state.tsx
-    secret-dialog.tsx
-    confirm-action-dialog.tsx
-    json-viewer.tsx
-    ui/
   lib/
-    api-client.ts
-    query-client.ts
-    format.ts
-    permissions.ts
-    webhook-events.ts
-  features/
-    auth/
-    numbers/
-    pairing/
-    chats/
-    contacts/
-    messages/
-    groups/
-    api-keys/
-    webhooks/
-    baileys-actions/
-    developer/
+  features/auth/
+  features/numbers/
+  features/pairing/
+  features/chats/
+  features/contacts/
+  features/messages/
+  features/groups/
+  features/api-keys/
+  features/webhooks/
+  features/baileys-actions/
+  features/developer/
 ```
 
-State rules:
+## 18. Verification completed
 
-- Route params select account/endpoint.
-- One typed fetch client includes cookies and normalizes errors.
-- Query library owns server state, polling, invalidation, and retry.
-- Two-second status polling only while pairing/connecting/reconnecting; slower while stable.
-- Message/group polling only while relevant views are active until a normalized stream exists.
-- Never persist one-time secrets.
+Green local gates:
 
-## 21. Accessibility and responsive requirements
+- `pnpm lint`.
+- `pnpm typecheck`.
+- `pnpm test`: 6 files, 27 tests.
+- `pnpm skill:validate`.
+- `pnpm build` for server, CLI, and web.
+- `npm pack --dry-run` includes server, CLI, web, Prisma migrations, skill, README, and license.
+- Production Compose configuration validation.
+- Shell syntax validation for deploy and smoke scripts.
 
-- WCAG 2.1 AA contrast.
-- Full keyboard operation and visible focus.
-- Correct landmarks and heading hierarchy.
-- Persistent field labels.
-- Radix focus trapping/restoration for dialogs.
-- Status announcements that never announce secrets.
-- Accessible row actions and icon labels.
-- Reduced-motion support.
-- Mobile sidebar sheet and compact account navigation.
-- No horizontal document overflow at 320 px.
-- QR remains scannable and preserves quiet zone.
+Green live Docker proof:
 
-## 22. Current verification status
+- PostgreSQL healthy with all six migrations applied.
+- API, worker, and webhook roles healthy.
+- `/health`, `/openapi.json`, `/docs`, skill, capabilities, catalogs, and route coverage.
+- Non-allowlisted signup rejected.
+- `marko@kortix.ai` authenticated.
+- Connection- and account-scoped API keys minted and enforced across WhatsApp state, commands, and webhooks.
+- Cross-connection reads and command reads denied to a connection key.
+- Owner-only API-key management enforced.
+- Real Baileys QR PNG generated.
+- Repeated pairing reuses the active QR.
+- Status/events do not leak pairing credentials.
+- 119 managed Baileys actions discovered.
+- Idempotent retry returns the same command; conflicting reuse returns 409.
+- Durable command ID/result authorization proven.
+- Webhook event validation and endpoint create/detail/patch/delete proven.
+- Connection-scoped pairing event created a scoped delivery without retaining the QR.
+- API-key revocation immediately returns 401.
+- Curl smoke passes.
+- Expanded TypeScript E2E passes.
 
-The baseline passed:
+Green live CLI proof:
 
-- `pnpm lint`
-- `pnpm typecheck`
-- `pnpm test`: 5 files, 24 tests.
-- `pnpm skill:validate`
-- `pnpm build`
-- Docker image build.
-- Prisma migration deployment.
-- Curl smoke with signup, account creation, scoped key use/revoke, 119-action discovery, and real Baileys QR generation.
-- TypeScript E2E with the same authenticated/pairing coverage.
-- Live `/docs`, `/openapi.json`, and `/v1/skill.md` HTTP checks.
-- OpenAPI route coverage: no missing explicit Hono route.
-- Served skill route coverage: no missing custom `/v1` path.
+- Auth status and one-connection scope.
+- Account list/status.
+- Privacy action discovery.
+- Event tail with no pairing secrets.
+- Webhook list.
+- Explicit QR pairing writes a valid 384×384 PNG.
 
-The baseline did not complete a human phone scan in the automated environment. Final real-device proof remains:
+## 19. Remaining acceptance proof and external release work
 
-- Scan QR with the user’s WhatsApp.
-- Account becomes connected.
-- Inbound message persists.
-- `message.created` webhook arrives immediately.
-- Outbound rich/text message succeeds.
-- Group creation succeeds.
-- Worker restart preserves the linked session.
-- Multiple workers preserve one session owner through leases.
+These items require user-owned external state; they are not unimplemented server features:
 
-## 23. Required tests for the refactor
+1. Scan the displayed QR with a real WhatsApp phone.
+2. Confirm the connection reaches `connected` with the real phone/JID.
+3. Send a real inbound and outbound message.
+4. Create a real group with user-approved participants.
+5. Point a webhook at a reachable receiver and prove signature/delivery timing.
+6. Restart the worker and prove the linked session reconnects.
+7. Run two worker replicas and prove a single active lease owner.
+8. Complete the Tailwind/shadcn visual rewrite and browser interaction suite.
 
-Automated gates:
+Publishing is also externally pending because the local repository currently has no Git remote. Before creating/pushing the public repository, verify the authenticated GitHub owner, repository name, npm scope ownership, GHCR target, and replace any README clone placeholder. Actual EC2/VPS provisioning requires an approved AWS account, region, instance/domain, and cost-bearing authorization.
 
-- Lint.
-- Typecheck.
-- Unit/integration tests.
-- Production server/web build.
-- Skill validation.
-- Curl smoke.
-- TypeScript E2E.
-- Docker build/up health.
+## 20. Exact real-phone test
 
-Browser E2E must prove:
+1. Open `http://localhost:8080`.
+2. Sign in as `marko@kortix.ai`.
+3. Create or select the intended named connection.
+4. Click QR pairing.
+5. On the phone open WhatsApp → Settings → Linked Devices → Link a Device.
+6. Scan the QR before the five-minute expiry.
+7. Wait for the console/API status to become `connected`.
+8. Mint a connection-scoped key for that connection.
+9. Run `wag auth status`, `wag accounts status <id>`, a read action, a test message, and the approved group test.
 
-1. Sign up/sign in.
-2. Click a number and assert the route and correct account detail.
-3. Reload/back/forward preserves selection.
-4. Create a connection.
-5. Generate a fresh QR/code and handle expiry.
-6. Real phone scan reaches Connected.
-7. Webhook creation sends the exact selected `event_types` array.
-8. All-events mode intentionally sends `[]`.
-9. Webhook secret appears once and disappears after acknowledgement/reload.
-10. Real inbound message produces synchronized state and a delivery.
-11. Failed delivery can be inspected and replayed.
-12. Standard API key can be created, used via curl, and revoked.
-13. Generic skill contains no secret and points to the live contract.
-14. A durable command can be polled to terminal state.
-15. Send a real message.
-16. Create a real group.
-17. Run one read and one write managed action.
-18. Keyboard and mobile workflows.
+## 21. Source-of-truth file map
 
-## 24. Definition of done for the next phase
-
-- Root product no longer uses the bespoke Agent Access concept.
-- Standard Better Auth API-key management is clear and complete.
-- Generic skill is credential-free and generated/anchored to live contract sources.
-- The raw WhatsApp WebSocket remains private to the worker.
-- Persisted read APIs remain available and gain unread/query support.
-- Managed action endpoint is the complete durable Baileys command surface.
-- Duplicate convenience mutations either delegate to that surface or are safely deprecated.
-- Command-status and idempotency contracts exist.
-- Normalized event poll/stream support is available if agents need a live connection in addition to webhooks.
-- Tailwind and shadcn/ui replace the old monolithic dashboard and global custom panel CSS.
-- Number rows are obviously navigable.
-- Webhook event selection and secret handling are production-grade.
-- All existing backend invariants remain intact.
-- Real phone, inbound event, outbound message, group, webhook, restart, and multi-worker proof passes.
-
-## 25. Source-of-truth file map
-
-- `README.md`: operator overview and local setup.
-- `docker-compose.yml`: local roles and dependencies.
-- `Dockerfile`: shared production image.
-- `prisma/schema.prisma`: all persistent models.
-- `prisma/migrations/`: deployment history.
-- `src/main.ts`: role startup and static web serving.
-- `src/config.ts`: validated runtime configuration.
-- `src/api/app.ts`: HTTP routes and handlers.
-- `src/api/openapi.ts`: OpenAPI/Scalar contract.
+- `README.md`: public operator/developer guide.
+- `STATUS_QUO.md`: this engineering/design handoff.
+- `package.json`: package, scripts, and `wag` bin.
+- `docker-compose.yml`: local runtime.
+- `docker-compose.production.yml`: VPS runtime.
+- `deploy/Caddyfile`: HTTPS reverse proxy.
+- `prisma/schema.prisma` and `prisma/migrations/`: durable schema.
+- `src/api/app.ts`: Hono routes and behavior.
+- `src/api/openapi.ts`: Scalar/OpenAPI contract.
 - `src/auth/auth.ts`: Better Auth and permission registry.
-- `src/auth/middleware.ts`: cookie/API-key actor resolution and authorization.
-- `src/baileys/auth-state.ts`: encrypted Prisma-backed Baileys auth state.
-- `src/baileys/session.ts`: socket lifecycle, sync, event handlers, command execution.
-- `src/baileys/actions.ts`: 119-action public registry.
-- `src/worker/leases.ts`: account lease acquisition/heartbeat/release.
-- `src/worker/supervisor.ts`: worker capacity and session ownership.
-- `src/services/commands.ts`: durable command enqueue/wait.
-- `src/services/events.ts`: ordered event persistence and webhook fan-out.
-- `src/webhooks/url-security.ts`: SSRF/DNS controls.
-- `src/webhooks/dispatcher.ts`: signed retrying delivery.
-- `src/skill.ts`: served generic/personalized skill generator; must be simplified.
-- `skills/whatsapp-gateway/SKILL.md`: installable generic skill; must remain credential-free.
-- `src/web/main.tsx`: current UI behavior reference, intended for replacement.
-- `src/web/styles.css`: current UI styles, intended for replacement.
-- `scripts/smoke.sh`: curl black-box test.
-- `src/scripts/e2e.ts`: TypeScript black-box test.
+- `src/auth/allowlist.ts`: private/open-signup policy.
+- `src/auth/middleware.ts`: session/key actor and connection scope.
+- `src/baileys/auth-state.ts`: encrypted Prisma-backed auth.
+- `src/baileys/session.ts`: socket lifecycle, synchronization, command execution.
+- `src/baileys/actions.ts`: 119 managed actions.
+- `src/worker/`: session leases and supervision.
+- `src/services/commands.ts`: idempotency and command envelopes.
+- `src/services/events.ts`: ordered events and webhook fan-out.
+- `src/services/event-types.ts`: normalized event registry.
+- `src/webhooks/`: URL security and signed dispatcher.
+- `src/cli.ts`: thin public API CLI.
+- `src/skill.ts`: served skill and compact capabilities.
+- `skills/whatsapp-gateway/SKILL.md`: installable skill.
+- `src/web/main.tsx`: current functional UI, to be replaced.
+- `src/web/styles.css`: current visual layer, to be replaced.
+- `scripts/smoke.sh`: curl black-box flow.
+- `src/scripts/e2e.ts`: expanded black-box flow.
 
-## 26. Non-negotiable engineering invariants
+## 22. Engineering invariants for every later change
 
-- Prisma/PostgreSQL remain the only persistence layer.
-- Linked-device auth state is encrypted and durable.
-- Exactly one worker lease owns one WhatsApp session at a time.
-- External commands are authenticated, account-scoped, permission-checked, and durable.
-- Incoming state is persisted before it is treated as available to agents.
-- Webhooks are signed, at-least-once, retrying, replayable, and SSRF-protected.
-- Raw protocol and cryptographic primitives are not exposed.
-- Secrets and pairing material are never persisted in the browser or logs.
-- OpenAPI, compact capability representation, skill, CLI, and implementation cannot drift into separate manual contracts.
-- A UI control may not pretend to work without a real authenticated API and persisted/read-back proof.
+- Prisma/PostgreSQL remain the durable source of truth.
+- Auth credentials and Signal keys remain encrypted.
+- Exactly one worker lease owns one WhatsApp session.
+- External mutations remain authenticated, connection-scoped, permission-checked, durable, and idempotent.
+- Incoming state is persisted before agents consume it.
+- Pairing credentials never enter durable events, webhooks, logs, status responses to agent keys, or generic skills.
+- Webhooks remain signed, retrying, replayable, and SSRF-protected.
+- Raw protocol, socket, relay, retry, and cryptographic primitives remain private.
+- The CLI remains a thin API client.
+- OpenAPI, action registry, capability map, skill, CLI, and implementation must not drift.
+- A UI control is complete only when its authenticated request, payload, persisted/read-back state, and visible result are proven.

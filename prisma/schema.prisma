@@ -275,6 +275,7 @@ model OutboundCommand {
   tenantId     String
   accountId    String
   type         String
+  idempotencyKey String?
   payload      Json
   status       String          @default("pending")
   result       Json?
@@ -290,6 +291,7 @@ model OutboundCommand {
   account      WhatsAppAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, status, availableAt])
+  @@unique([tenantId, idempotencyKey])
   @@map("outbound_commands")
 }
 
@@ -301,6 +303,7 @@ model WebhookEndpoint {
   description String?
   enabled     Boolean           @default(true)
   eventTypes  String[]          @default([])
+  accountIds  String[]          @default([])
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)

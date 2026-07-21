@@ -10,6 +10,8 @@ const schema = z.object({
   BETTER_AUTH_URL: z.string().url().default('http://localhost:8080'),
   PUBLIC_BASE_URL: z.string().url().default('http://localhost:8080'),
   WEB_ORIGIN: z.string().url().default('http://localhost:3000'),
+  AUTH_ALLOWLIST_ENABLED: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
+  ALLOWED_EMAILS: z.string().default('marko@kortix.ai'),
   ENCRYPTION_KEY: z.string().default('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='),
   WORKER_ID: z.string().optional(),
   WORKER_CAPACITY: z.coerce.number().int().positive().default(25),
@@ -36,6 +38,7 @@ if (parsed.NODE_ENV === 'production' && !parsed.ALLOW_INSECURE_DEVELOPMENT_DEFAU
 export const config = {
   ...parsed,
   encryptionKey,
+  allowedEmails: parsed.ALLOWED_EMAILS.split(',').map((email) => email.trim().toLowerCase()).filter(Boolean),
   workerId: parsed.WORKER_ID || `worker_${randomUUID()}`,
 };
 

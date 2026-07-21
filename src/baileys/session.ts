@@ -110,7 +110,7 @@ export class BaileysSession {
             where: { id: this.accountId },
             data: { status: 'pairing', pairingQr: dataUrl, pairingCode: null },
           });
-          await emitEvent(this.accountId, 'pairing.qr.updated', { qr_data_url: dataUrl });
+          await emitEvent(this.accountId, 'pairing.qr.updated', { expires_at: account.pairingExpiresAt?.toISOString() ?? null });
         }
       }
       if (update.connection === 'open') {
@@ -459,7 +459,8 @@ export class BaileysSession {
           where: { id: this.accountId },
           data: { phoneNumber, status: 'pairing', pairingMode: 'code', pairingCode: code, pairingQr: null },
         });
-        await emitEvent(this.accountId, 'pairing.code.created', { code });
+        const pairing = await prisma.whatsAppAccount.findUnique({ where: { id: this.accountId }, select: { pairingExpiresAt: true } });
+        await emitEvent(this.accountId, 'pairing.code.created', { expires_at: pairing?.pairingExpiresAt?.toISOString() ?? null });
         return { code };
       }
       case 'message.send': {

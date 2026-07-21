@@ -7,7 +7,7 @@ trap 'rm -rf -- "$smoke_tmp"' EXIT
 
 smoke_cookie="$smoke_tmp/cookies.txt"
 smoke_body="$smoke_tmp/body.json"
-smoke_email="smoke-$(node -e 'process.stdout.write(crypto.randomUUID())')@example.com"
+smoke_email="${SMOKE_EMAIL:-marko@kortix.ai}"
 smoke_password='correct-horse-battery-staple'
 
 assert_status() {
@@ -20,11 +20,24 @@ assert_status() {
   fi
 }
 
+denied_email="denied-$(node -e 'process.stdout.write(crypto.randomUUID())')@example.com"
+status="$(curl -sS -o "$smoke_body" -w '%{http_code}' \
+  -X POST "$smoke_base_url/api/auth/sign-up/email" \
+  -H "Origin: $smoke_base_url" -H 'Content-Type: application/json' \
+  --data "{\"name\":\"Denied\",\"email\":\"$denied_email\",\"password\":\"$smoke_password\"}")"
+[[ "$status" -ge 400 ]] || { echo 'Non-allowlisted signup unexpectedly succeeded' >&2; exit 1; }
+
 status="$(curl -sS -o "$smoke_body" -w '%{http_code}' -c "$smoke_cookie" \
   -X POST "$smoke_base_url/api/auth/sign-up/email" \
   -H "Origin: $smoke_base_url" -H 'Content-Type: application/json' \
   --data "{\"name\":\"Gateway smoke\",\"email\":\"$smoke_email\",\"password\":\"$smoke_password\"}")"
-assert_status 200 "$status" signup
+if [[ "$status" != 200 ]]; then
+  status="$(curl -sS -o "$smoke_body" -w '%{http_code}' -c "$smoke_cookie" \
+    -X POST "$smoke_base_url/api/auth/sign-in/email" \
+    -H "Origin: $smoke_base_url" -H 'Content-Type: application/json' \
+    --data "{\"email\":\"$smoke_email\",\"password\":\"$smoke_password\"}")"
+fi
+assert_status 200 "$status" authentication
 
 status="$(curl -sS -o "$smoke_body" -w '%{http_code}' -b "$smoke_cookie" \
   -X POST "$smoke_base_url/v1/accounts" \
@@ -34,12 +47,12 @@ assert_status 201 "$status" account_create
 account_id="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).id)' "$smoke_body")"
 
 status="$(curl -sS -o "$smoke_body" -w '%{http_code}' -b "$smoke_cookie" \
-  -X POST "$smoke_base_url/v1/agent-access" \
+  -X POST "$smoke_base_url/v1/api-keys" \
   -H "Origin: $smoke_base_url" -H 'Content-Type: application/json' \
-  --data "{\"name\":\"Curl smoke agent\",\"account_ids\":[\"$account_id\"]}")"
-assert_status 201 "$status" agent_access
-api_key="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).api_key)' "$smoke_body")"
-key_id="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).key_id)' "$smoke_body")"
+  --data "{\"name\":\"Curl smoke connection key\",\"scope\":\"connection\",\"account_id\":\"$account_id\"}")"
+assert_status 201 "$status" api_key_create
+api_key="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).key)' "$smoke_body")"
+key_id="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).id)' "$smoke_body")"
 
 status="$(curl -sS -o "$smoke_body" -w '%{http_code}' \
   "$smoke_base_url/v1/accounts" -H "X-API-Key: $api_key")"
@@ -52,6 +65,14 @@ status="$(curl -sS -o "$smoke_body" -w '%{http_code}' \
 assert_status 200 "$status" action_catalog
 action_count="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1])).data.length))' "$smoke_body")"
 [[ "$action_count" -ge 119 ]] || { echo "Action catalog is incomplete ($action_count)" >&2; exit 1; }
+
+status="$(curl -sS -o "$smoke_body" -w '%{http_code}' \
+  "$smoke_base_url/v1/webhook-event-types" -H "X-API-Key: $api_key")"
+assert_status 200 "$status" webhook_event_types
+
+status="$(curl -sS -o "$smoke_body" -w '%{http_code}' \
+  "$smoke_base_url/v1/events?account_id=$account_id&after_sequence=0" -H "X-API-Key: $api_key")"
+assert_status 200 "$status" events
 
 pairing_checked=false
 if [[ "${SMOKE_PAIRING:-0}" == 1 ]]; then
@@ -69,14 +90,13 @@ if [[ "${SMOKE_PAIRING:-0}" == 1 ]]; then
 fi
 
 status="$(curl -sS -o "$smoke_body" -w '%{http_code}' -b "$smoke_cookie" \
-  -X POST "$smoke_base_url/api/auth/api-key/delete" \
-  -H "Origin: $smoke_base_url" -H 'Content-Type: application/json' \
-  --data "{\"keyId\":\"$key_id\"}")"
-assert_status 200 "$status" api_key_revoke
+  -X DELETE "$smoke_base_url/v1/api-keys/$key_id" \
+  -H "Origin: $smoke_base_url")"
+assert_status 204 "$status" api_key_revoke
 
 status="$(curl -sS -o "$smoke_body" -w '%{http_code}' \
   "$smoke_base_url/v1/accounts" -H "X-API-Key: $api_key")"
 assert_status 401 "$status" revoked_key
 
-printf '{"ok":true,"signup_status":200,"account_status":201,"scoped_accounts":%s,"baileys_actions":%s,"pairing_checked":%s,"revoked_key_status":401}\n' \
+printf '{"ok":true,"authentication_status":200,"allowlist_denied":true,"account_status":201,"scoped_accounts":%s,"baileys_actions":%s,"pairing_checked":%s,"revoked_key_status":401}\n' \
   "$scoped_count" "$action_count" "$pairing_checked"

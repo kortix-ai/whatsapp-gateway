@@ -3,6 +3,7 @@ import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { config } from '../config.js';
 import { prisma } from '../db/prisma.js';
+import { isAllowedEmail } from './allowlist.js';
 
 export const gatewayPermissions = {
   accounts: ['read', 'write', 'pair', 'disconnect'],
@@ -30,6 +31,21 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 10,
+  },
+  databaseHooks: {
+    user: {
+      create: {
+        before: async (user) => isAllowedEmail(user.email),
+      },
+    },
+    session: {
+      create: {
+        before: async (session) => {
+          const user = await prisma.user.findUnique({ where: { id: session.userId }, select: { email: true } });
+          return Boolean(user && isAllowedEmail(user.email));
+        },
+      },
+    },
   },
   plugins: [
     apiKey({

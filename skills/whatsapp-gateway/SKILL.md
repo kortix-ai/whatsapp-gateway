@@ -1,61 +1,37 @@
 ---
 name: whatsapp-gateway
-description: Operate connected WhatsApp accounts through the managed WhatsApp Gateway API. Use when an agent needs to inspect chats or contacts, send WhatsApp messages, create or manage groups, or consume WhatsApp events with a user-provided scoped gateway key.
+description: Operate a connected WhatsApp account through a self-hosted, authenticated, durable WhatsApp Gateway API.
 ---
 
 # WhatsApp Gateway
 
-Obtain the gateway base URL and a scoped API key from the user. Set the key as `WHATSAPP_GATEWAY_API_KEY`. Never print, persist, commit, or transmit it anywhere except the gateway.
+Obtain the gateway base URL and a connection-scoped API key from the owner. Set them as `WHATSAPP_GATEWAY_URL` and `WHATSAPP_GATEWAY_API_KEY`. Never print, persist, commit, or transmit the key elsewhere.
 
-Authenticate every request with `X-API-Key: $WHATSAPP_GATEWAY_API_KEY`.
+Authenticate with `X-API-Key: $WHATSAPP_GATEWAY_API_KEY`.
 
-## Choose an account
+## Discover the contract
 
-Call `GET /v1/accounts`. Select the account the user named. If multiple accounts match ambiguously, ask before acting.
+1. Read `GET /v1/capabilities.md` for the compact route map.
+2. Read `GET /openapi.json` for all REST schemas.
+3. Read `GET /v1/baileys-actions` for every managed WhatsApp action, exact Baileys method, ordered arguments, description, and permission.
 
-Read synchronized state when needed:
+## Workflow
 
-- Call `GET /v1/accounts/{accountId}/chats` for conversations.
-- Call `GET /v1/accounts/{accountId}/contacts` for recipients.
-- Call `GET /v1/accounts/{accountId}/groups` for group IDs.
-- Call `GET /v1/accounts/{accountId}/messages?chat_jid=...` for message history.
+1. Call `GET /v1/accounts`; a connection-scoped key should return exactly its assigned number.
+2. Resolve ambiguous recipients through chats, contacts, groups, and messages.
+3. Execute WhatsApp operations with `POST /v1/accounts/{accountId}/actions/{action}` and `{"args":[...]}`.
+4. Retry safely with an `Idempotency-Key` header.
+5. If the response is pending, poll `GET /v1/commands/{commandId}?wait_seconds=30` until completed or failed.
+6. Consume normalized state through `GET /v1/events` or signed webhooks.
 
-Use `GET /openapi.json` for the complete machine-readable contract or `GET /docs` for its Scalar reference. The custom REST routes are:
+Owner-only API key routes are `GET|POST /v1/api-keys` and `DELETE /v1/api-keys/{keyId}`. Account and pairing routes are `GET|POST /v1/accounts`, `GET /v1/accounts/{accountId}`, `GET /v1/accounts/{accountId}/status`, `POST /v1/accounts/{accountId}/pair/qr`, `POST /v1/accounts/{accountId}/pair/code`, and `DELETE /v1/accounts/{accountId}/session`.
 
-- Accounts: `GET|POST /v1/accounts`, `GET /v1/accounts/{accountId}`, `GET /v1/accounts/{accountId}/status`, `POST /v1/accounts/{accountId}/pair/qr`, `POST /v1/accounts/{accountId}/pair/code`, and `DELETE /v1/accounts/{accountId}/session`.
-- Data and messaging: `GET /v1/accounts/{accountId}/chats`, `GET /v1/accounts/{accountId}/contacts`, `GET /v1/accounts/{accountId}/groups`, `GET /v1/accounts/{accountId}/messages`, `POST /v1/accounts/{accountId}/messages`, `POST /v1/accounts/{accountId}/groups`, `PATCH /v1/accounts/{accountId}/groups/{groupId}`, `POST /v1/accounts/{accountId}/groups/{groupId}/participants`, and `DELETE /v1/accounts/{accountId}/groups/{groupId}/participants/{participantId}`.
-- Baileys passthrough: `GET /v1/baileys-actions` and `POST /v1/accounts/{accountId}/actions/{action}` with `{"args":[...]}`.
-- Webhooks: `GET|POST /v1/webhook-endpoints`, `DELETE /v1/webhook-endpoints/{endpointId}`, `GET /v1/webhook-deliveries`, and `POST /v1/webhook-deliveries/{deliveryId}/replay`.
-- Bootstrap: `POST /v1/agent-access` and public `GET /v1/skill.md`.
+Persisted state routes are `GET /v1/accounts/{accountId}/chats`, `GET /v1/accounts/{accountId}/contacts`, `GET /v1/accounts/{accountId}/groups`, `GET /v1/accounts/{accountId}/messages`, and `GET /v1/events`. Durable control routes are `GET /v1/baileys-actions`, `POST /v1/accounts/{accountId}/actions/{action}`, and `GET /v1/commands/{commandId}`.
 
-## Send messages
+Convenience mutation aliases are `POST /v1/accounts/{accountId}/messages`, `POST /v1/accounts/{accountId}/groups`, `PATCH /v1/accounts/{accountId}/groups/{groupId}`, `POST /v1/accounts/{accountId}/groups/{groupId}/participants`, and `DELETE /v1/accounts/{accountId}/groups/{groupId}/participants/{participantId}`.
 
-Send text:
+Webhook routes are `GET /v1/webhook-event-types`, `GET|POST /v1/webhook-endpoints`, `GET|PATCH|DELETE /v1/webhook-endpoints/{endpointId}`, `GET /v1/webhook-deliveries`, `GET /v1/webhook-deliveries/{deliveryId}`, and `POST /v1/webhook-deliveries/{deliveryId}/replay`.
 
-```bash
-curl -sS "$WHATSAPP_GATEWAY_URL/v1/accounts/$ACCOUNT_ID/messages" \
-  -H "X-API-Key: $WHATSAPP_GATEWAY_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"to":"+15551234567","text":"Hello"}'
-```
+Discovery routes are `GET /v1/skill.md`, `GET /v1/capabilities.md`, `GET /openapi.json`, and `GET /docs`.
 
-Supply a WhatsApp JID instead of a phone number when one is available. Supply a Baileys-compatible `content` object instead of `text` for supported rich messages.
-
-## Manage groups
-
-Create a group with `POST /v1/accounts/{accountId}/groups` and JSON `{"subject":"Name","participants":["+15551234567"]}`.
-
-Update its subject or description with `PATCH /v1/accounts/{accountId}/groups/{groupId}`. Add, remove, promote, or demote participants with `POST /v1/accounts/{accountId}/groups/{groupId}/participants` and an `action` field.
-
-## Handle durable results
-
-Treat a response containing `{"status":"pending","command_id":"..."}` as accepted asynchronous work. Do not report it as delivered. Poll synchronized state or account status until the requested outcome appears.
-
-For capabilities without a dedicated convenience endpoint, call `GET /v1/baileys-actions`, select the documented action, then call `POST /v1/accounts/{accountId}/actions/{action}` with `{"args":[...]}`. Use this for receipts, presence, chat mutations, privacy, profiles, business catalogs, communities, newsletters, and calls only when the key grants the action's listed permission.
-
-## Apply safety boundaries
-
-- Ask before sending a message, creating a group, changing participants, or disconnecting an account unless the user explicitly requested the action.
-- Confirm the exact recipient or group before sending consequential content.
-- Never expose API keys, pairing codes, pairing QR codes, or webhook secrets.
-- Never use an account outside the key's returned account list or permissions.
+Ask before sending messages, creating groups, changing participants, or disconnecting unless explicitly requested. Never expose API keys, pairing QR codes, pairing codes, or webhook secrets.

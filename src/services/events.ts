@@ -38,7 +38,10 @@ export async function emitEvent(accountId: string, type: string, data: unknown):
       where: {
         tenantId: account.tenantId,
         enabled: true,
-        OR: [{ eventTypes: { isEmpty: true } }, { eventTypes: { has: type } }],
+        AND: [
+          { OR: [{ eventTypes: { isEmpty: true } }, { eventTypes: { has: type } }] },
+          { OR: [{ accountIds: { isEmpty: true } }, { accountIds: { has: accountId } }] },
+        ],
       },
       select: { id: true },
     });

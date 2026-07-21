@@ -1,0 +1,98 @@
+name: whatsapp-gateway
+
+x-gateway-environment: &gateway-environment
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+  BETTER_AUTH_URL: https://${DOMAIN}
+  PUBLIC_BASE_URL: https://${DOMAIN}
+  WEB_ORIGIN: https://${DOMAIN}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+  AUTH_ALLOWLIST_ENABLED: ${AUTH_ALLOWLIST_ENABLED:-true}
+  ALLOWED_EMAILS: ${ALLOWED_EMAILS:-marko@kortix.ai}
+  WORKER_CAPACITY: ${WORKER_CAPACITY:-25}
+  PAIRING_TTL_SECONDS: ${PAIRING_TTL_SECONDS:-300}
+  WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-12}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-whatsapp_gateway}
+      POSTGRES_USER: ${POSTGRES_USER:-whatsapp_gateway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-whatsapp_gateway} -d ${POSTGRES_DB:-whatsapp_gateway}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build: .
+    command: ["pnpm", "prisma", "migrate", "deploy"]
+    environment: *gateway-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    environment:
+      <<: *gateway-environment
+      RUNTIME_ROLE: api
+      PORT: 8080
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build: .
+    environment:
+      <<: *gateway-environment
+      RUNTIME_ROLE: worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  webhooks:
+    build: .
+    environment:
+      <<: *gateway-environment
+      RUNTIME_ROLE: webhooks
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

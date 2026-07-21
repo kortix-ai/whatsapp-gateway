@@ -15,4 +15,13 @@ describe('OpenAPI document', () => {
       expect(path?.[route.method], `missing ${route.method.toUpperCase()} ${route.path}`).toBeDefined();
     }
   });
+
+  it('documents the real durable command body and idempotency contract', () => {
+    const action = openApiDocument.paths['/v1/accounts/{accountId}/actions/{action}'].post;
+    expect(action.parameters.some((parameter) => parameter.name === 'Idempotency-Key' && parameter.in === 'header')).toBe(true);
+    expect(action.responses['200'].content['application/json'].schema).toEqual({ $ref: '#/components/schemas/CommandEnvelope' });
+    expect(openApiDocument.components.schemas.CommandEnvelope.properties).toHaveProperty('command_id');
+    expect(openApiDocument.components.schemas.CommandEnvelope.properties).toHaveProperty('status');
+    expect(openApiDocument.components.schemas.CommandEnvelope.properties).toHaveProperty('result');
+  });
 });
