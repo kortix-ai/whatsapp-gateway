@@ -155,10 +155,13 @@ export class BaileysSession {
     // to the http agent for SOCKS. Either way media exits through the same residential IP.
     const proxyFetch = config.WA_PROXY_URL ? (createProxyDispatcher(config.WA_PROXY_URL) ?? proxyAgent) : undefined;
     if (config.WA_PROXY_URL) this.log.info({ proxy: redactProxy(config.WA_PROXY_URL) }, 'Routing WhatsApp socket through proxy');
+    const browser = config.WA_BROWSER === 'windows' ? Browsers.windows('Chrome')
+      : config.WA_BROWSER === 'ubuntu' ? Browsers.ubuntu('Chrome')
+      : Browsers.macOS('Chrome');
     this.socket = makeWASocket({
       auth: authState.state,
       logger: this.log as never,
-      browser: Browsers.ubuntu('Chrome'),
+      browser,
       markOnlineOnConnect: false,
       syncFullHistory: config.SYNC_FULL_HISTORY,
       generateHighQualityLinkPreview: false,

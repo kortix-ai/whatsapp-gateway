@@ -23,6 +23,10 @@ const schema = z.object({
   // Route the Baileys socket + media through a proxy so WhatsApp sees a residential
   // exit IP instead of the datacenter. Empty = direct. http(s):// or socks5://.
   WA_PROXY_URL: z.string().optional().transform((value) => value?.trim() || undefined),
+  // The device profile WhatsApp shows in "Linked Devices". A stable, common consumer
+  // desktop looks more human than a server distro; the important thing is that it never
+  // changes across reconnects (a rotating fingerprint is itself a bot signal).
+  WA_BROWSER: z.enum(['macos', 'windows', 'ubuntu']).default('macos'),
   PAIRING_TTL_SECONDS: z.coerce.number().int().min(60).default(300),
   WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(1000),
   WEBHOOK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
