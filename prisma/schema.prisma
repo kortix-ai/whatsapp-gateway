@@ -125,6 +125,10 @@ model WhatsAppAccount {
   pairingMode          String?
   pairingCode          String?
   pairingQr            String?
+  /// Raw WhatsApp pairing payload, so clients (CLI/TUI) can render the QR
+  /// themselves instead of only consuming the rendered PNG data URL. Exposed
+  /// under exactly the same authorization rules as pairingQr.
+  pairingQrRaw         String?
   pairingExpiresAt     DateTime?
   lastConnectedAt      DateTime?
   lastConnectAttemptAt DateTime?

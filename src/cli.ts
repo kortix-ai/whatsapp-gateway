@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
+import QRCode from 'qrcode';
 
 /**
  * wag — the WhatsApp Gateway CLI.
@@ -261,6 +262,7 @@ Global
   --timeout SECONDS  --base-url URL  --api-key KEY  --idempotency-key KEY
 
 auth        status | qr [--output FILE] | code --phone E164 | logout
+            (qr prints a scannable code directly in the terminal)
 accounts    list | add --name NAME [--phone E164] | status
 send        text --to R --message TEXT [--reply MSG_ID] [--mention PHONE]...
             file --to R --file PATH [--caption TEXT] [--kind KIND] [--voice]
@@ -281,7 +283,8 @@ profile     set-name NAME | set-status TEXT
 channels    send --to R --message TEXT
 events      tail [--type TYPE] [--once] [--after-sequence N]
 commands    get ID [--wait]
-actions     list [--category NAME] | run ACTION --args '<json-array>'
+actions     list [--category NAME] [--all] | run ACTION --args '<json-array>'
+            (lists only what your API key may run; --all shows the rest)
 webhooks    list
 doctor      version      help
 `;
@@ -327,9 +330,20 @@ async function main(): Promise<void> {
       }
       const dataUrl = typeof result.qr_data_url === 'string' ? result.qr_data_url : null;
       if (!dataUrl) { record(result); return; }
-      const output = resolve(str('output') ?? `whatsapp-pairing-${accountId}.png`);
-      await writeFile(output, Buffer.from(dataUrl.split(',')[1]!, 'base64'));
-      record({ account_id: accountId, status: result.status, qr_file: output });
+
+      // Draw the code straight into the terminal so pairing never needs a GUI.
+      const raw = typeof result.qr === 'string' ? result.qr : null;
+      if (raw && !asJson) {
+        process.stdout.write(`${await QRCode.toString(raw, { type: 'terminal', small: true })}\n`);
+        process.stdout.write('Scan with WhatsApp → Settings → Linked Devices → Link a Device\n\n');
+      }
+      const summary: Row = { account_id: accountId, status: result.status };
+      if (str('output')) {
+        const output = resolve(str('output')!);
+        await writeFile(output, Buffer.from(dataUrl.split(',')[1]!, 'base64'));
+        summary.qr_file = output;
+      }
+      record(summary);
       return;
     }
     if (action === 'code') {
@@ -585,12 +599,21 @@ async function main(): Promise<void> {
 
   if (domain === 'actions') {
     if (action === 'list') {
-      const all = await data<{ name: string; method: string; description: string }>('/v1/baileys-actions');
+      // Show only what this API key may actually run; --all reveals the rest
+      // with an allowed column so the denied surface is explainable.
+      const showAll = bool('all');
+      const all = await data<{ name: string; method: string; description: string; allowed?: boolean }>(
+        `/v1/baileys-actions${showAll ? '' : '?allowed=true'}`,
+      );
       const category = str('category');
       const rows = category ? all.filter((entry) => entry.name.startsWith(`${category}.`)) : all;
-      table(rows as unknown as Row[], [
+      const columns = [
         { key: 'name', header: 'action' }, { key: 'method', header: 'method' }, { key: 'description', header: 'description' },
-      ]);
+      ];
+      table(rows as unknown as Row[], showAll ? [{ key: 'allowed', header: 'allowed' }, ...columns] : columns);
+      if (!showAll && !asJson) {
+        process.stdout.write(`\n${rows.length} actions authorized for this key. Use --all to include actions it cannot run.\n`);
+      }
       return;
     }
     if (action === 'run') {

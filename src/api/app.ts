@@ -87,10 +87,18 @@ function commandStatus(result: { status: string }): 200 | 202 {
   return result.status === 'pending' || result.status === 'processing' ? 202 : 200;
 }
 
+// Every action is annotated with whether the calling credential may actually
+// run it, so clients can present exactly the surface a key is authorized for.
+// `?allowed=true` returns only the permitted actions.
 app.get('/v1/baileys-actions', requireAuth({ resource: 'accounts', action: 'read' }), (context) => {
-  return context.json({
-    data: Object.entries(baileysActions).map(([name, definition]) => ({ name, ...definition })),
-  });
+  const actor = context.get('actor');
+  const onlyAllowed = context.req.query('allowed') === 'true';
+  const entries = Object.entries(baileysActions).map(([name, definition]) => ({
+    name,
+    ...definition,
+    allowed: hasPermission(actor, definition.permission.resource, definition.permission.action),
+  }));
+  return context.json({ data: onlyAllowed ? entries.filter((entry) => entry.allowed) : entries });
 });
 
 app.get('/v1/webhook-event-types', requireAuth({ resource: 'webhooks', action: 'read' }), (context) => {
@@ -282,7 +290,7 @@ app.get('/v1/accounts/:accountId/status', requireAuth({ resource: 'accounts', ac
     whatsapp_jid: account.whatsappJid,
     pairing_mode: account.pairingMode,
     pairing_expires_at: account.pairingExpiresAt,
-    ...(mayPair ? { qr_data_url: account.pairingQr, pairing_code: account.pairingCode } : {}),
+    ...(mayPair ? { qr_data_url: account.pairingQr, qr: account.pairingQrRaw, pairing_code: account.pairingCode } : {}),
     last_connected_at: account.lastConnectedAt,
     last_connect_attempt_at: account.lastConnectAttemptAt,
     next_connect_at: account.nextConnectAt,
@@ -297,13 +305,13 @@ app.post('/v1/accounts/:accountId/pair/qr', requireAuth({ resource: 'accounts', 
     && account.pairingExpiresAt !== null
     && account.pairingExpiresAt.getTime() > Date.now();
   if (activePairing && account.pairingQr) {
-    return context.json({ account_id: account.id, status: account.status, qr_data_url: account.pairingQr });
+    return context.json({ account_id: account.id, status: account.status, qr_data_url: account.pairingQr, qr: account.pairingQrRaw });
   }
   if (!activePairing) {
     await prisma.whatsAppAccount.update({
       where: { id: account.id },
       data: {
-        status: 'connecting', pairingMode: 'qr', pairingQr: null, pairingCode: null, lastError: null,
+        status: 'connecting', pairingMode: 'qr', pairingQr: null, pairingQrRaw: null, pairingCode: null, lastError: null,
         reconnectAttempt: 0, nextConnectAt: null,
         pairingExpiresAt: new Date(Date.now() + config.PAIRING_TTL_SECONDS * 1000),
       },
@@ -312,7 +320,7 @@ app.post('/v1/accounts/:accountId/pair/qr', requireAuth({ resource: 'accounts', 
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const updated = await prisma.whatsAppAccount.findUnique({ where: { id: account.id } });
-    if (updated?.pairingQr) return context.json({ account_id: account.id, status: updated.status, qr_data_url: updated.pairingQr });
+    if (updated?.pairingQr) return context.json({ account_id: account.id, status: updated.status, qr_data_url: updated.pairingQr, qr: updated.pairingQrRaw });
     if (updated?.status === 'connected') return context.json({ account_id: account.id, status: 'connected' });
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -327,7 +335,7 @@ app.post('/v1/accounts/:accountId/pair/code', requireAuth({ resource: 'accounts'
   await prisma.whatsAppAccount.update({
     where: { id: account.id },
     data: {
-      status: 'connecting', pairingMode: 'code', phoneNumber, pairingCode: null, pairingQr: null, lastError: null,
+      status: 'connecting', pairingMode: 'code', phoneNumber, pairingCode: null, pairingQr: null, pairingQrRaw: null, lastError: null,
       reconnectAttempt: 0, nextConnectAt: null,
       pairingExpiresAt: new Date(Date.now() + config.PAIRING_TTL_SECONDS * 1000),
     },

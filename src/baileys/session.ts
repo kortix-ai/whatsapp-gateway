@@ -126,7 +126,7 @@ export class BaileysSession {
           const dataUrl = await QRCode.toDataURL(update.qr, { margin: 4, width: 384, errorCorrectionLevel: 'M' });
           await prisma.whatsAppAccount.update({
             where: { id: this.accountId },
-            data: { status: 'pairing', pairingQr: dataUrl, pairingCode: null },
+            data: { status: 'pairing', pairingQr: dataUrl, pairingQrRaw: update.qr, pairingCode: null },
           });
           await emitEvent(this.accountId, 'pairing.qr.updated', { expires_at: account.pairingExpiresAt?.toISOString() ?? null });
         }
@@ -143,6 +143,7 @@ export class BaileysSession {
             phoneNumber: me?.id?.split(':')[0]?.split('@')[0] ?? null,
             pairingMode: null,
             pairingQr: null,
+            pairingQrRaw: null,
             pairingCode: null,
             pairingExpiresAt: null,
             lastConnectedAt: new Date(),
@@ -168,7 +169,7 @@ export class BaileysSession {
             where: { id: this.accountId },
             data: {
               status: 'disconnected', reconnectAttempt: 0, nextConnectAt: null, lastError: message,
-              pairingMode: null, pairingQr: null, pairingCode: null, pairingExpiresAt: null,
+              pairingMode: null, pairingQr: null, pairingQrRaw: null, pairingCode: null, pairingExpiresAt: null,
             },
           });
         } else {
@@ -330,7 +331,7 @@ export class BaileysSession {
     await prisma.whatsAppAccount.updateMany({
       where: { id: this.accountId, status: { not: 'connected' } },
       data: {
-        status: 'disconnected', pairingMode: null, pairingQr: null, pairingCode: null,
+        status: 'disconnected', pairingMode: null, pairingQr: null, pairingQrRaw: null, pairingCode: null,
         pairingExpiresAt: null, reconnectAttempt: 0, nextConnectAt: null,
         lastError: 'Pairing expired; start pairing again',
       },
@@ -514,7 +515,7 @@ export class BaileysSession {
         const code = await socket.requestPairingCode(phoneNumber);
         await prisma.whatsAppAccount.update({
           where: { id: this.accountId },
-          data: { phoneNumber, status: 'pairing', pairingMode: 'code', pairingCode: code, pairingQr: null },
+          data: { phoneNumber, status: 'pairing', pairingMode: 'code', pairingCode: code, pairingQr: null, pairingQrRaw: null },
         });
         const pairing = await prisma.whatsAppAccount.findUnique({ where: { id: this.accountId }, select: { pairingExpiresAt: true } });
         await emitEvent(this.accountId, 'pairing.code.created', { expires_at: pairing?.pairingExpiresAt?.toISOString() ?? null });
