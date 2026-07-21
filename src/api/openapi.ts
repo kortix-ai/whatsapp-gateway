@@ -95,6 +95,9 @@ export const openApiDocument = {
     '/v1/skill.md': {
       get: { tags: ['API keys'], summary: 'Download the generic agent skill', security: [], responses: { '200': { description: 'SKILL.md' } } },
     },
+    '/v1/chat.md': {
+      get: { tags: ['API keys'], summary: 'How to converse naturally on WhatsApp', security: [], responses: { '200': { description: 'Conversational skill Markdown' } } },
+    },
     '/v1/capabilities.md': {
       get: { tags: ['API keys'], summary: 'Compact token-efficient capability map', security: [], responses: { '200': { description: 'Capability Markdown' } } },
     },

@@ -12,7 +12,7 @@ import { encryptJson } from '../crypto.js';
 import { prisma } from '../db/prisma.js';
 import { id } from '../ids.js';
 import { logger } from '../logger.js';
-import { buildAgentCapabilities, buildAgentSkill } from '../skill.js';
+import { buildAgentCapabilities, buildAgentSkill, buildChatSkill } from '../skill.js';
 import { commandEnvelope, enqueueCommand, IdempotencyConflictError, waitForCommand } from '../services/commands.js';
 import { gatewayEventTypes } from '../services/event-types.js';
 import { validateWebhookUrl } from '../webhooks/url-security.js';
@@ -48,6 +48,7 @@ app.get('/docs', Scalar({
   persistAuth: true,
 }));
 app.get('/v1/skill.md', (context) => context.text(buildAgentSkill(), 200, { 'content-type': 'text/markdown; charset=utf-8' }));
+app.get('/v1/chat.md', (context) => context.text(buildChatSkill(), 200, { 'content-type': 'text/markdown; charset=utf-8' }));
 app.get('/v1/capabilities.md', (context) => context.text(buildAgentCapabilities(), 200, { 'content-type': 'text/markdown; charset=utf-8' }));
 app.on(['GET', 'POST'], '/api/auth/*', (context) => auth.handler(context.req.raw));
 
