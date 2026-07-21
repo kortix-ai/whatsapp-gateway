@@ -155,12 +155,15 @@ Production inventory:
 | Public URL | <https://wag.kortix.cloud> |
 | AWS account | `935064898258` |
 | AWS region | `us-west-2` |
+| EC2 instance | `i-0ff3f759c52b9c8ce` |
+| Elastic IP | `44.237.195.230` |
 | EC2 tag | `Name=whatsapp-gateway` |
 | Runtime directory | `/opt/whatsapp-gateway` |
-| Runtime secret | AWS Secrets Manager `whatsapp-gateway/production` |
+| Runtime secret | `arn:aws:secretsmanager:us-west-2:935064898258:secret:whatsapp-gateway/production-3UyrWr` |
 | Backups | `s3://kortix-whatsapp-gateway-backups-935064898258/postgres/` |
 | Terraform state | `s3://kortix-whatsapp-gateway-tfstate-935064898258/wag.kortix.cloud/terraform.tfstate` |
 | Terraform lock table | DynamoDB `kortix-whatsapp-gateway-terraform-locks` |
+| GitHub deploy role | `arn:aws:iam::935064898258:role/whatsapp-gateway-github-deploy` |
 | DNS | Cloudflare zone `kortix.cloud`, proxied `wag` A record |
 | Source/image | `kortix-ai/whatsapp-gateway`, `ghcr.io/kortix-ai/whatsapp-gateway` |
 

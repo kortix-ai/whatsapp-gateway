@@ -10,6 +10,8 @@ Branch: `main`
 
 Local application: `http://localhost:8080`
 
+Kortix production: `https://wag.kortix.cloud`
+
 Scalar API reference: `http://localhost:8080/docs`
 
 OpenAPI 3.1: `http://localhost:8080/openapi.json`
@@ -18,7 +20,7 @@ Generic agent skill: `http://localhost:8080/v1/skill.md`
 
 Compact capability map: `http://localhost:8080/v1/capabilities.md`
 
-This document describes what exists now. It is not a backlog. The backend, API, CLI, persistence, self-hosting stack, standard API-key model, and functional web console are implemented. The remaining product work is the from-scratch Tailwind/shadcn design rewrite and real-device acceptance testing with a user-owned WhatsApp account.
+This document describes what exists now. It is not a backlog. The backend, API, CLI, persistence, self-hosting stack, standard API-key model, routed Tailwind/shadcn web console, AWS deployment, CI/CD path, and real-device acceptance flow are implemented and verified.
 
 ## 1. Product contract
 
@@ -225,6 +227,8 @@ Read filters:
 
 Unread message filtering resolves chats with a positive unread count and returns inbound messages from those chats.
 
+`GET /v1/accounts/{accountId}/messages/{messageId}/media` downloads and decrypts stored image, video, audio, sticker, or document content while WhatsApp still hosts it. `?download=1` forces attachment disposition.
+
 ## 9. Durable command contract
 
 Every external mutation is inserted into `OutboundCommand` before execution. The owning worker claims it and persists completion or failure.
@@ -332,6 +336,7 @@ Webhook URL security rejects credentials, unsafe protocols, loopback, private, l
 - `GET /v1/accounts/{accountId}/contacts`
 - `GET /v1/accounts/{accountId}/groups`
 - `GET /v1/accounts/{accountId}/messages`
+- `GET /v1/accounts/{accountId}/messages/{messageId}/media`
 - `GET /v1/events`
 - `GET /v1/commands/{commandId}`
 
@@ -427,49 +432,11 @@ Production deployment requires DNS, ports 80/443, generated secrets, and matchin
 
 Back up the PostgreSQL database/volume and `.env`. Losing `ENCRYPTION_KEY` makes stored linked-device auth unrecoverable.
 
-## 16. Current web console
+## 16. Web console
 
-The current React console is functionally complete enough to operate the gateway:
+The web console is a routed React application rebuilt with Tailwind CSS, shadcn/Radix-style primitives, Lucide icons, TanStack Query, React Hook Form, Zod, and Sonner.
 
-- Better Auth signup/sign-in/sign-out.
-- Create and select named connections.
-- QR and phone-code pairing.
-- Connection polling.
-- Create/list/revoke connection API keys.
-- Download the generic skill separately.
-- Webhook URL, description, all-events mode, and individual event checkboxes.
-- Delete webhook endpoints and replay failed deliveries.
-- Send text, create groups, execute arbitrary managed actions.
-- View recent synchronized messages and groups.
-
-It is not the final design. It remains one monolithic `src/web/main.tsx` with hand-written `src/web/styles.css`, weak navigation affordances, no routes/deep links, basic secret feedback, and limited table/detail/search UX.
-
-The reported non-clickable number problem is structural: the row is a button, but selection is local state, the only row is often already selected, and there is no URL/navigation change or strong active affordance. The redesign must replace this behavior, not merely restyle it.
-
-## 17. Design-engineering mandate
-
-Reimplement the console from scratch. Preserve the API contracts and backend invariants; do not port the old card grid.
-
-Required stack:
-
-- Tailwind CSS.
-- shadcn/ui and Radix primitives.
-- Lucide icons.
-- A real router.
-- TanStack Query or equivalent server-state layer.
-- React Hook Form plus Zod.
-- Real browser E2E tests.
-
-Visual direction:
-
-- Calm developer infrastructure console.
-- Neutral surfaces and dense, legible hierarchy.
-- WhatsApp green only as an earned connected/success accent.
-- Amber for pairing/retrying and red for errors/destructive actions.
-- Minimal decorative chrome, shadow, gradients, glow, and pill use.
-- Strong keyboard focus, AA contrast, responsive navigation, and no 320 px overflow.
-
-Target routes:
+Implemented routes:
 
 ```text
 /auth/sign-in
@@ -491,9 +458,9 @@ Target routes:
 /app/developer
 ```
 
-Required UX outcomes:
+Implemented UX outcomes:
 
-- Entire connection rows are obvious navigable links with URL-persisted selection.
+- Entire connection rows are navigable links with URL-persisted selection, fixing the original non-clickable number behavior.
 - Pairing has preparation, current QR/code, expiry countdown, retry, error, and connected states.
 - Webhook creation explicitly distinguishes all current/future events from selected events.
 - Event picker is searchable/categorized and sends exact `event_types`.
@@ -503,8 +470,10 @@ Required UX outcomes:
 - Groups support create, subject/description update, and participant administration with confirmation.
 - Action explorer loads the dynamic catalog, searches/filters it, validates JSON args, and renders the command envelope.
 - Developer view links OpenAPI, Scalar, skill, capabilities, CLI setup, curl auth, and webhook verification.
+- Production SPA fallback makes deep links and hard refreshes resolve to the client shell.
+- Messages include a media preview/download flow backed by the authenticated media route.
 
-Suggested source layout:
+Source layout:
 
 ```text
 src/web/
@@ -545,12 +514,12 @@ Green live Docker proof:
 - API, worker, and webhook roles healthy.
 - `/health`, `/openapi.json`, `/docs`, skill, capabilities, catalogs, and route coverage.
 - Non-allowlisted signup rejected.
-- `marko@kortix.ai` authenticated.
+- `marko@kortix.ai` is the sole production allowlisted owner.
 - Connection- and account-scoped API keys minted and enforced across WhatsApp state, commands, and webhooks.
 - Cross-connection reads and command reads denied to a connection key.
 - Owner-only API-key management enforced.
-- Real Baileys QR PNG generated.
-- Repeated pairing reuses the active QR.
+- The existing user-owned linked-device state was re-encrypted for the production key and migrated without exposing either key.
+- Production reconnected the real `Marko Main` account and persisted its phone/JID.
 - Status/events do not leak pairing credentials.
 - 119 managed Baileys actions discovered.
 - Idempotent retry returns the same command; conflicting reuse returns 409.
@@ -560,6 +529,12 @@ Green live Docker proof:
 - API-key revocation immediately returns 401.
 - Curl smoke passes.
 - Expanded TypeScript E2E passes.
+- Daily backup cron installed and a real encrypted S3 Postgres dump verified.
+- GitHub OIDC, immutable GHCR image publish, SSM deployment, and `/health.release` SHA proof verified.
+- Hosted signed webhook delivered HTTP 204 in one attempt; HMAC, event ID, and delivery ID all matched.
+- Hosted connection-scoped and account-scoped keys were enforced independently.
+- Hosted real self-message completed in one attempt; identical idempotent retry returned the same command ID.
+- Hosted real group creation and cleanup completed.
 
 Green live CLI proof:
 
@@ -568,34 +543,26 @@ Green live CLI proof:
 - Privacy action discovery.
 - Event tail with no pairing secrets.
 - Webhook list.
-- Explicit QR pairing writes a valid 384×384 PNG.
+- Real hosted message send, command wait, message read, group create, group cleanup, event tail, and webhook inspection.
 
-## 19. Remaining acceptance proof and external release work
+## 19. Release state
 
-These items require user-owned external state; they are not unimplemented server features:
+The source is public at `https://github.com/kortix-ai/whatsapp-gateway`, GitHub CI and immutable deployment automation are green, `ghcr.io/kortix-ai/whatsapp-gateway:main` is anonymously pullable, and production runs at `https://wag.kortix.cloud` on the AWS inventory documented in `README.md`.
 
-1. Scan the displayed QR with a real WhatsApp phone.
-2. Confirm the connection reaches `connected` with the real phone/JID.
-3. Send a real inbound and outbound message.
-4. Create a real group with user-approved participants.
-5. Point a webhook at a reachable receiver and prove signature/delivery timing.
-6. Restart the worker and prove the linked session reconnects.
-7. Run two worker replicas and prove a single active lease owner.
-8. Complete the Tailwind/shadcn visual rewrite and browser interaction suite.
+The `v0.1.0` GitHub release carries an npm-compatible prebuilt `wag` package and produces immutable GHCR semver tags. Direct npm registry publication is optional and is the only distribution channel not configured; the release tarball and source install are already usable.
 
-The source is public at `https://github.com/kortix-ai/whatsapp-gateway`, GitHub CI is green, and `ghcr.io/kortix-ai/whatsapp-gateway:main` is anonymously pullable. The `v0.1.0` GitHub release carries an npm-compatible prebuilt `wag` package and produces immutable GHCR semver tags. Direct npm registry publication remains pending because this workstation is not authenticated to npm. Actual EC2/VPS provisioning requires an approved cloud account, region, instance/domain, and cost-bearing authorization.
+## 20. Operator flow
 
-## 20. Exact real-phone test
-
-1. Open `http://localhost:8080`.
-2. Sign in as `marko@kortix.ai`.
+1. Open `https://wag.kortix.cloud` (or `http://localhost:8080` when self-hosting).
+2. Sign in with an email present in `ALLOWED_EMAILS`; production currently permits only `marko@kortix.ai`.
 3. Create or select the intended named connection.
 4. Click QR pairing.
 5. On the phone open WhatsApp → Settings → Linked Devices → Link a Device.
 6. Scan the QR before the five-minute expiry.
 7. Wait for the console/API status to become `connected`.
 8. Mint a connection-scoped key for that connection.
-9. Run `wag auth status`, `wag accounts status <id>`, a read action, a test message, and the approved group test.
+9. Prefer a connection-scoped key for an agent; use an account key only for trusted tooling that must see all present and future connections.
+10. Run `wag auth status`, `wag accounts status <id>`, a read action, a test message, and any approved group action.
 
 ## 21. Source-of-truth file map
 
@@ -622,8 +589,11 @@ The source is public at `https://github.com/kortix-ai/whatsapp-gateway`, GitHub 
 - `src/cli.ts`: thin public API CLI.
 - `src/skill.ts`: served skill and compact capabilities.
 - `skills/whatsapp-gateway/SKILL.md`: installable skill.
-- `src/web/main.tsx`: current functional UI, to be replaced.
-- `src/web/styles.css`: current visual layer, to be replaced.
+- `src/web/app.tsx`: authenticated route tree.
+- `src/web/components/`: shared layout and shadcn/Radix-style primitives.
+- `src/web/features/`: auth, numbers, pairing, chats, contacts, messages, groups, actions, API keys, webhooks, and developer surfaces.
+- `src/web/lib/`: API client, Better Auth hooks, query client, formatting, status, and theme utilities.
+- `src/web/styles.css`: Tailwind tokens and application visual layer.
 - `scripts/smoke.sh`: curl black-box flow.
 - `src/scripts/e2e.ts`: expanded black-box flow.
 

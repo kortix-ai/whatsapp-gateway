@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { BufferJSON, downloadMediaMessage, getContentType, type WAMessage, type WAMessageContent } from 'baileys';
 import { Scalar } from '@scalar/hono-api-reference';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -10,6 +11,7 @@ import { config } from '../config.js';
 import { encryptJson } from '../crypto.js';
 import { prisma } from '../db/prisma.js';
 import { id } from '../ids.js';
+import { logger } from '../logger.js';
 import { buildAgentCapabilities, buildAgentSkill } from '../skill.js';
 import { commandEnvelope, enqueueCommand, IdempotencyConflictError, waitForCommand } from '../services/commands.js';
 import { gatewayEventTypes } from '../services/event-types.js';
@@ -396,6 +398,75 @@ app.get('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', 
     take: limit,
   });
   return context.json({ data: messages, next_before: messages.at(-1)?.messageTimestamp.toISOString() ?? null });
+});
+
+// Message content nodes that carry downloadable media.
+const MEDIA_CONTENT_TYPES = new Set([
+  'imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage', 'documentWithCaptionMessage',
+]);
+
+/** Peel ephemeral / view-once / edited / device-sent envelopes to the real content. */
+function unwrapContent(content: WAMessageContent | null | undefined): WAMessageContent | null | undefined {
+  let current = content;
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    const nested = current.ephemeralMessage?.message
+      ?? current.viewOnceMessage?.message
+      ?? current.viewOnceMessageV2?.message
+      ?? current.viewOnceMessageV2Extension?.message
+      ?? current.documentWithCaptionMessage?.message
+      ?? current.editedMessage?.message
+      ?? current.deviceSentMessage?.message;
+    if (!nested) break;
+    current = nested;
+  }
+  return current;
+}
+
+// Download and decrypt the media attached to a stored message. Decryption uses
+// the media keys already saved in the message payload, so the API can serve the
+// bytes directly (no worker round-trip) as long as WhatsApp still hosts them.
+app.get('/v1/accounts/:accountId/messages/:messageId/media', requireAuth({ resource: 'messages', action: 'read' }), async (context) => {
+  const account = await accountFor(context.get('actor'), context.req.param('accountId'));
+  const record = await prisma.whatsAppMessage.findFirst({
+    where: { id: context.req.param('messageId'), accountId: account.id },
+    select: { payload: true, messageType: true },
+  });
+  if (!record) throw new HTTPException(404, { message: 'Message not found' });
+
+  const message = JSON.parse(JSON.stringify(record.payload), BufferJSON.reviver) as WAMessage;
+  const content = unwrapContent(message.message);
+  const contentType = getContentType(content ?? undefined);
+  if (!contentType || !MEDIA_CONTENT_TYPES.has(contentType)) {
+    throw new HTTPException(404, { message: 'This message has no downloadable media' });
+  }
+  const node = (content as Record<string, { mimetype?: string; fileName?: string } | undefined>)[contentType];
+
+  let buffer: Buffer;
+  try {
+    buffer = await downloadMediaMessage(
+      { ...message, message: content ?? null },
+      'buffer',
+      {},
+      { logger, reuploadRequest: () => { throw new Error('media reupload requires an active session'); } },
+    );
+  } catch (error) {
+    logger.warn({ err: error, accountId: account.id, messageId: context.req.param('messageId') }, 'Media download failed');
+    throw new HTTPException(502, { message: 'Media could not be downloaded. It may have expired — refresh it with the messages.media.refresh action, then retry.' });
+  }
+
+  const mimetype = node?.mimetype?.split(';')[0]?.trim() || 'application/octet-stream';
+  const extension = mimetype.split('/')[1] || 'bin';
+  const safeName = (node?.fileName || `${contentType.replace('Message', '')}-${context.req.param('messageId')}.${extension}`).replace(/[\r\n"]/g, '');
+  const disposition = context.req.query('download') === '1' || contentType.startsWith('document') ? 'attachment' : 'inline';
+  return new Response(new Uint8Array(buffer), {
+    status: 200,
+    headers: {
+      'content-type': mimetype,
+      'content-length': String(buffer.length),
+      'content-disposition': `${disposition}; filename="${safeName}"`,
+      'cache-control': 'private, max-age=3600',
+    },
+  });
 });
 
 app.post('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', action: 'send' }), async (context) => {

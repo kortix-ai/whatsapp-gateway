@@ -59,6 +59,7 @@ Use a connection-scoped key for an agent controlling one WhatsApp number. Accoun
 - \`GET /v1/accounts/{accountId}/contacts\`
 - \`GET /v1/accounts/{accountId}/groups\`
 - \`GET /v1/accounts/{accountId}/messages\`
+- \`GET /v1/accounts/{accountId}/messages/{messageId}/media\` — download decrypted image/video/audio/document bytes (add \`?download=1\` to force a file download)
 - \`GET /v1/events\`
 
 ## Durable actions

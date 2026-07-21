@@ -203,6 +203,23 @@ export const openApiDocument = {
         responses: { '200': commandResponse('Message command reached a terminal state'), '202': commandResponse('Message is durably queued'), '409': { description: 'Idempotency conflict' } },
       },
     },
+    '/v1/accounts/{accountId}/messages/{messageId}/media': {
+      get: {
+        tags: ['Messages'],
+        summary: 'Download decrypted media for a message',
+        description: 'Returns the raw decrypted bytes of the image, video, audio, sticker, or document attached to a message, with the original content-type. Add ?download=1 to force a file download. Returns 502 if WhatsApp no longer hosts the media (refresh it with the messages.media.refresh action first).',
+        parameters: [
+          accountParameter,
+          { name: 'messageId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'download', in: 'query', schema: { type: 'string', enum: ['1'] } },
+        ],
+        responses: {
+          '200': { description: 'Raw media bytes', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
+          '404': { description: 'Message not found or has no downloadable media' },
+          '502': { description: 'Media expired or could not be downloaded' },
+        },
+      },
+    },
     '/v1/accounts/{accountId}/groups': {
       get: { tags: ['Groups'], summary: 'List synchronized groups', parameters: [accountParameter, { name: 'q', in: 'query', schema: { type: 'string' } }], responses: { '200': { description: 'Groups' } } },
       post: {
