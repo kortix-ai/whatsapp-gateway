@@ -12,6 +12,17 @@ export type GatewayEvent = {
   data: unknown;
 };
 
+/**
+ * Event types an endpoint may have subscribed to in order to receive `type`.
+ * `message.received` / `message.sent` replaced the undirected `message.created`,
+ * so endpoints still subscribed to the old name keep matching both.
+ */
+function subscribedTypes(type: string): string[] {
+  return type === 'message.received' || type === 'message.sent'
+    ? [type, 'message.created']
+    : [type];
+}
+
 export async function emitEvent(accountId: string, type: string, data: unknown): Promise<GatewayEvent> {
   return prisma.$transaction(async (tx) => {
     const account = await tx.whatsAppAccount.findUnique({ where: { id: accountId }, select: { tenantId: true } });
@@ -39,7 +50,7 @@ export async function emitEvent(accountId: string, type: string, data: unknown):
         tenantId: account.tenantId,
         enabled: true,
         AND: [
-          { OR: [{ eventTypes: { isEmpty: true } }, { eventTypes: { has: type } }] },
+          { OR: [{ eventTypes: { isEmpty: true } }, { eventTypes: { hasSome: subscribedTypes(type) } }] },
           { OR: [{ accountIds: { isEmpty: true } }, { accountIds: { has: accountId } }] },
         ],
       },

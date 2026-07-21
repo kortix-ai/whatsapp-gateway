@@ -26,6 +26,16 @@ export function signWebhook(secret: string, timestamp: string, body: string): st
   return createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
 }
 
+/**
+ * HMAC over the raw body alone, without the timestamp prefix — the GitHub-style
+ * convention most receivers implement. Sent alongside `signWebhook` so generic
+ * consumers (Kortix webhook triggers, for one) can verify deliveries without
+ * special-casing this gateway's replay-protected scheme.
+ */
+export function signWebhookBody(secret: string, body: string): string {
+  return createHmac('sha256', secret).update(body).digest('hex');
+}
+
 export function verifyWebhookSignature(secret: string, timestamp: string, body: string, signature: string): boolean {
   const expected = Buffer.from(signWebhook(secret, timestamp, body));
   const received = Buffer.from(signature);

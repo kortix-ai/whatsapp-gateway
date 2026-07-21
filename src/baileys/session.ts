@@ -517,7 +517,7 @@ export class BaileysSession {
       update: { payload: json(message), text: messageText(message) },
     });
     if (emit) {
-      await emitEvent(this.accountId, 'message.created', {
+      await emitEvent(this.accountId, stored.direction === 'inbound' ? 'message.received' : 'message.sent', {
         id: stored.id,
         whatsapp_message_id: stored.whatsappMessageId,
         chat_jid: stored.chatJid,

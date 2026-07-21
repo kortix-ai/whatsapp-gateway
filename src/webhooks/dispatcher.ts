@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { fetch, type Agent, type RequestInit } from 'undici';
 import { config } from '../config.js';
-import { decryptJson, signWebhook } from '../crypto.js';
+import { decryptJson, signWebhook, signWebhookBody } from '../crypto.js';
 import { prisma } from '../db/prisma.js';
 import { logger } from '../logger.js';
 import { createWebhookAgent, validateWebhookUrl } from './url-security.js';
@@ -124,6 +124,7 @@ export class WebhookDispatcher {
           'x-whatsapp-delivery-id': delivery.id,
           'x-whatsapp-timestamp': timestamp,
           'x-whatsapp-signature': `v1=${signWebhook(secret, timestamp, body)}`,
+          'x-kortix-signature': `sha256=${signWebhookBody(secret, body)}`,
         },
         body,
         redirect: 'manual',

@@ -32,7 +32,12 @@ export const passthroughEvents = {
 const syntheticEvents = [
   'pairing.qr.updated', 'pairing.code.created', 'pairing.expired',
   'connection.opened', 'connection.closed',
-  'message.created', 'message.updated', 'message.deleted',
+  // `message.received` / `message.sent` split `message.created` by direction so
+  // a subscriber can take inbound only — without that, an agent replying over
+  // the API would be re-triggered by its own outbound message. `message.created`
+  // stays subscribable and matches both (see services/events.ts).
+  'message.created', 'message.received', 'message.sent',
+  'message.updated', 'message.deleted',
   'history.synced',
   'chat.updated', 'chat.deleted', 'contact.updated',
   'group.updated', 'group.participants.updated',
