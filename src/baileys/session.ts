@@ -4,6 +4,7 @@ import {
   DisconnectReason,
   getContentType,
   makeWASocket,
+  type BaileysEventMap,
   type Chat,
   type Contact,
   type GroupMetadata,
@@ -17,9 +18,18 @@ import { prisma } from '../db/prisma.js';
 import { id } from '../ids.js';
 import { logger } from '../logger.js';
 import { emitEvent } from '../services/events.js';
+import { passthroughEvents } from '../services/event-types.js';
 import { createPostgresAuthState } from './auth-state.js';
 import { baileysActions, isBaileysAction } from './actions.js';
 import { resetReconnectBackoff, scheduleReconnect } from '../worker/reconnect.js';
+
+const COMMAND_TIMEOUT_MS = 110_000;
+// Stale-claim recovery must exceed the execution timeout so a live executor can never have its claim stolen.
+const COMMAND_STALE_MS = 120_000;
+const MAX_COMMAND_ATTEMPTS = 5;
+
+type PostgresAuthState = Awaited<ReturnType<typeof createPostgresAuthState>>;
+type PairingAccount = { pairingMode: string | null; pairingExpiresAt: Date | null };
 
 function json(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value, BufferJSON.replacer)) as Prisma.InputJsonValue;
@@ -38,6 +48,23 @@ function unixDate(value: WAMessage['messageTimestamp']): Date {
   return new Date(seconds * 1000);
 }
 
+function chatPatch(chat: { name?: string | null; unreadCount?: number | null; archived?: boolean | null }) {
+  return {
+    ...(chat.name !== undefined ? { name: chat.name } : {}),
+    ...(chat.unreadCount != null ? { unreadCount: chat.unreadCount } : {}),
+    ...(chat.archived != null ? { archived: chat.archived } : {}),
+    metadata: json(chat),
+  };
+}
+
+function contactPatch(contact: { name?: string | null; notify?: string | null }) {
+  return {
+    ...(contact.name !== undefined ? { name: contact.name } : {}),
+    ...(contact.notify !== undefined ? { notify: contact.notify } : {}),
+    metadata: json(contact),
+  };
+}
+
 function messageText(message: WAMessage): string | null {
   const body = message.message;
   if (!body) return null;
@@ -52,6 +79,26 @@ function messageText(message: WAMessage): string | null {
 function disconnectCode(error: unknown): number | undefined {
   return (error as { output?: { statusCode?: number }; data?: { statusCode?: number } } | undefined)?.output?.statusCode
     ?? (error as { data?: { statusCode?: number } } | undefined)?.data?.statusCode;
+}
+
+/**
+ * Baileys attaches the stream:error reason node as Boom data, e.g.
+ * { tag: 'conflict', attrs: { type: 'device_removed' } }.
+ */
+function disconnectReason(error: unknown): string | null {
+  const data = (error as { data?: { tag?: string; attrs?: Record<string, string> } } | undefined)?.data;
+  if (!data?.tag) return null;
+  return data.attrs?.type ? `${data.tag}:${data.attrs.type}` : data.tag;
+}
+
+function disconnectMessage(error: Error | undefined, code: number | undefined, reason: string | null): string {
+  if (reason === 'conflict:device_removed') {
+    return 'WhatsApp removed this linked device (conflict: device_removed); pair the number again';
+  }
+  if (reason === 'conflict:replaced' || code === DisconnectReason.connectionReplaced) {
+    return 'Another client connected with this WhatsApp session (conflict: replaced); make sure only one gateway worker uses these credentials';
+  }
+  return error?.message ?? `Connection closed (${code ?? 'unknown'})`;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -72,6 +119,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 export class BaileysSession {
   private socket: WASocket | null = null;
   private stopped = false;
+  private connectionOpen = false;
   private commandTimer: NodeJS.Timeout | null = null;
   private commandInFlight = false;
   private pairingTimer: NodeJS.Timeout | null = null;
@@ -106,7 +154,7 @@ export class BaileysSession {
       logger: this.log as never,
       browser: Browsers.ubuntu('Chrome'),
       markOnlineOnConnect: false,
-      syncFullHistory: true,
+      syncFullHistory: config.SYNC_FULL_HISTORY,
       generateHighQualityLinkPreview: false,
     });
 
@@ -115,11 +163,43 @@ export class BaileysSession {
       data: { status: 'connecting', nextConnectAt: null, lastConnectAttemptAt: new Date() },
     });
 
-    this.socket.ev.on('creds.update', async () => {
+    this.wireConnectionEvents(this.socket, authState, account);
+    this.wireSyncEvents(this.socket);
+
+    this.commandTimer = setInterval(() => void this.processNextCommand(), 250);
+    this.commandTimer.unref();
+  }
+
+  /** Registers a handler whose rejections are logged instead of crashing the process. */
+  private on<E extends keyof BaileysEventMap>(
+    socket: WASocket,
+    event: E,
+    handler: (payload: BaileysEventMap[E]) => unknown,
+    onError?: () => void,
+  ) {
+    socket.ev.on(event, (payload) => {
+      void Promise.resolve()
+        .then(() => handler(payload))
+        .catch((error) => {
+          this.log.error({ error, event }, 'Socket event handler failed');
+          onError?.();
+        });
+    });
+  }
+
+  private wireConnectionEvents(socket: WASocket, authState: PostgresAuthState, account: PairingAccount) {
+    this.on(socket, 'creds.update', async () => {
+      if (this.pairingTimer && authState.state.creds.registered) {
+        // Registered mid-window: the pairing TTL no longer applies and must not wipe fresh credentials.
+        clearTimeout(this.pairingTimer);
+        this.pairingTimer = null;
+      }
       await authState.saveCreds();
     });
 
-    this.socket.ev.on('connection.update', async (update) => {
+    // A failure while reacting to a connection change tears the session down so the
+    // supervisor restarts it, instead of leaving a zombie socket it believes is healthy.
+    this.on(socket, 'connection.update', async (update) => {
       if (update.connection === 'connecting' || update.qr) this.pairingTransportReady = true;
       if (update.qr) {
         if (account.pairingMode === 'qr') {
@@ -132,6 +212,7 @@ export class BaileysSession {
         }
       }
       if (update.connection === 'open') {
+        this.connectionOpen = true;
         if (this.pairingTimer) clearTimeout(this.pairingTimer);
         this.pairingTimer = null;
         const me = authState.state.creds.me;
@@ -160,10 +241,12 @@ export class BaileysSession {
         void this.syncAllGroups();
       }
       if (update.connection === 'close' && !this.stopped) {
+        this.connectionOpen = false;
         const code = disconnectCode(update.lastDisconnect?.error);
+        const reason = disconnectReason(update.lastDisconnect?.error);
         const loggedOut = code === DisconnectReason.loggedOut;
         if (loggedOut) await authState.clear();
-        const message = update.lastDisconnect?.error?.message ?? `Connection closed (${code ?? 'unknown'})`;
+        const message = disconnectMessage(update.lastDisconnect?.error, code, reason);
         if (loggedOut) {
           await prisma.whatsAppAccount.update({
             where: { id: this.accountId },
@@ -176,12 +259,14 @@ export class BaileysSession {
           const retry = await scheduleReconnect(this.accountId, message);
           this.log.warn({ ...retry }, 'Scheduled WhatsApp reconnect');
         }
-        await emitEvent(this.accountId, 'connection.closed', { code, logged_out: loggedOut });
+        await emitEvent(this.accountId, 'connection.closed', { code, logged_out: loggedOut, reason, message });
         await this.stop(false);
       }
-    });
+    }, () => void this.stop(false));
+  }
 
-    this.socket.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
+  private wireSyncEvents(socket: WASocket) {
+    this.on(socket, 'messaging-history.set', async ({ chats, contacts, messages }) => {
       await this.upsertChats(chats);
       await this.upsertContacts(contacts);
       for (const message of messages) await this.persistMessage(message, false);
@@ -191,46 +276,36 @@ export class BaileysSession {
         messages: messages.length,
       });
     });
-    this.socket.ev.on('chats.upsert', (chats) => void this.upsertChats(chats));
-    this.socket.ev.on('chats.update', async (chats) => {
+    this.on(socket, 'chats.upsert', (chats) => this.upsertChats(chats));
+    this.on(socket, 'chats.update', async (chats) => {
       for (const chat of chats) {
         if (!chat.id) continue;
         await prisma.whatsAppChat.updateMany({
           where: { accountId: this.accountId, jid: chat.id },
-          data: {
-            ...(chat.name !== undefined ? { name: chat.name } : {}),
-            ...(chat.unreadCount != null ? { unreadCount: chat.unreadCount } : {}),
-            ...(chat.archived != null ? { archived: chat.archived } : {}),
-            metadata: json(chat),
-          },
+          data: chatPatch(chat),
         });
       }
       await emitEvent(this.accountId, 'chat.updated', json(chats));
     });
-    this.socket.ev.on('chats.delete', async (jids) => {
+    this.on(socket, 'chats.delete', async (jids) => {
       await prisma.whatsAppChat.deleteMany({ where: { accountId: this.accountId, jid: { in: jids } } });
       await emitEvent(this.accountId, 'chat.deleted', { jids });
     });
-    this.socket.ev.on('chats.lock', (change) => void emitEvent(this.accountId, 'chat.locked', json(change)));
-    this.socket.ev.on('contacts.upsert', (contacts) => void this.upsertContacts(contacts));
-    this.socket.ev.on('contacts.update', async (contacts) => {
+    this.on(socket, 'contacts.upsert', (contacts) => this.upsertContacts(contacts));
+    this.on(socket, 'contacts.update', async (contacts) => {
       for (const contact of contacts) {
         if (!contact.id) continue;
         await prisma.whatsAppContact.updateMany({
           where: { accountId: this.accountId, jid: contact.id },
-          data: {
-            ...(contact.name !== undefined ? { name: contact.name } : {}),
-            ...(contact.notify !== undefined ? { notify: contact.notify } : {}),
-            metadata: json(contact),
-          },
+          data: contactPatch(contact),
         });
       }
       await emitEvent(this.accountId, 'contact.updated', json(contacts));
     });
-    this.socket.ev.on('messages.upsert', async ({ messages, type }) => {
+    this.on(socket, 'messages.upsert', async ({ messages, type }) => {
       for (const message of messages) await this.persistMessage(message, type === 'notify');
     });
-    this.socket.ev.on('messages.update', async (updates) => {
+    this.on(socket, 'messages.update', async (updates) => {
       for (const update of updates) {
         if (!update.key.id) continue;
         await prisma.whatsAppMessage.updateMany({
@@ -242,7 +317,7 @@ export class BaileysSession {
       }
       await emitEvent(this.accountId, 'message.updated', json(updates));
     });
-    this.socket.ev.on('messages.delete', async (deletion) => {
+    this.on(socket, 'messages.delete', async (deletion) => {
       if ('all' in deletion) {
         await prisma.whatsAppMessage.updateMany({ where: { accountId: this.accountId, chatJid: deletion.jid }, data: { status: 'deleted' } });
       } else {
@@ -251,18 +326,12 @@ export class BaileysSession {
       }
       await emitEvent(this.accountId, 'message.deleted', json(deletion));
     });
-    this.socket.ev.on('messages.media-update', (updates) => void emitEvent(this.accountId, 'message.media.updated', json(updates)));
-    this.socket.ev.on('messages.reaction', (updates) => void emitEvent(this.accountId, 'message.reaction.updated', json(updates)));
-    this.socket.ev.on('message-receipt.update', (updates) => void emitEvent(this.accountId, 'message.receipt.updated', json(updates)));
-    this.socket.ev.on('groups.upsert', async (groups) => {
+    this.on(socket, 'groups.upsert', async (groups) => {
       for (const group of groups) await this.upsertGroup(group);
     });
-    this.socket.ev.on('groups.update', async (groups) => {
+    this.on(socket, 'groups.update', async (groups) => {
       for (const group of groups) {
         if (!group.id) continue;
-        const existing = await prisma.whatsAppGroup.findUnique({
-          where: { accountId_jid: { accountId: this.accountId, jid: group.id } },
-        });
         await prisma.whatsAppGroup.upsert({
           where: { accountId_jid: { accountId: this.accountId, jid: group.id } },
           create: {
@@ -274,8 +343,8 @@ export class BaileysSession {
             metadata: json(group),
           },
           update: {
-            subject: group.subject ?? existing?.subject ?? group.id,
-            ownerJid: group.owner ?? existing?.ownerJid ?? null,
+            ...(group.subject != null ? { subject: group.subject } : {}),
+            ...(group.owner != null ? { ownerJid: group.owner } : {}),
             ...(group.participants ? { participants: json(group.participants) } : {}),
             metadata: json(group),
           },
@@ -283,39 +352,21 @@ export class BaileysSession {
         await emitEvent(this.accountId, 'group.updated', json(group));
       }
     });
-    this.socket.ev.on('group-participants.update', async (change) => {
-      if (this.socket) {
-        const metadata = await this.socket.groupMetadata(change.id);
-        await this.upsertGroup(metadata);
-      }
+    this.on(socket, 'group-participants.update', async (change) => {
+      const metadata = await socket.groupMetadata(change.id);
+      await this.upsertGroup(metadata);
       await emitEvent(this.accountId, 'group.participants.updated', json(change));
     });
-    this.socket.ev.on('group.join-request', (change) => void emitEvent(this.accountId, 'group.join_request.updated', json(change)));
-    this.socket.ev.on('group.member-tag.update', (change) => void emitEvent(this.accountId, 'group.member_tag.updated', json(change)));
-    this.socket.ev.on('call', async (calls) => {
-      await emitEvent(this.accountId, 'call.updated', json(calls));
-    });
-    this.socket.ev.on('messaging-history.status', (status) => void emitEvent(this.accountId, 'history.status.updated', json(status)));
-    this.socket.ev.on('lid-mapping.update', (mapping) => void emitEvent(this.accountId, 'lid_mapping.updated', json(mapping)));
-    this.socket.ev.on('presence.update', (presence) => void emitEvent(this.accountId, 'presence.updated', json(presence)));
-    this.socket.ev.on('blocklist.set', (blocklist) => void emitEvent(this.accountId, 'blocklist.set', json(blocklist)));
-    this.socket.ev.on('blocklist.update', (blocklist) => void emitEvent(this.accountId, 'blocklist.updated', json(blocklist)));
-    this.socket.ev.on('labels.edit', (label) => void emitEvent(this.accountId, 'label.updated', json(label)));
-    this.socket.ev.on('labels.association', (association) => void emitEvent(this.accountId, 'label.association.updated', json(association)));
-    this.socket.ev.on('newsletter.reaction', (reaction) => void emitEvent(this.accountId, 'newsletter.reaction.updated', json(reaction)));
-    this.socket.ev.on('newsletter.view', (view) => void emitEvent(this.accountId, 'newsletter.view.updated', json(view)));
-    this.socket.ev.on('newsletter-participants.update', (update) => void emitEvent(this.accountId, 'newsletter.participants.updated', json(update)));
-    this.socket.ev.on('newsletter-settings.update', (update) => void emitEvent(this.accountId, 'newsletter.settings.updated', json(update)));
-    this.socket.ev.on('message-capping.update', (update) => void emitEvent(this.accountId, 'message.capping.updated', json(update)));
-    this.socket.ev.on('settings.update', (update) => void emitEvent(this.accountId, 'settings.updated', json(update)));
 
-    this.commandTimer = setInterval(() => void this.processNextCommand(), 250);
-    this.commandTimer.unref();
+    for (const event of Object.keys(passthroughEvents) as (keyof typeof passthroughEvents)[]) {
+      this.on(socket, event, (payload) => emitEvent(this.accountId, passthroughEvents[event], json(payload)));
+    }
   }
 
   async stop(notify = true) {
     if (this.stopped) return;
     this.stopped = true;
+    this.connectionOpen = false;
     if (this.commandTimer) clearInterval(this.commandTimer);
     if (this.pairingTimer) clearTimeout(this.pairingTimer);
     if (this.stableConnectionTimer) clearTimeout(this.stableConnectionTimer);
@@ -353,12 +404,7 @@ export class BaileysSession {
           archived: chat.archived ?? false,
           metadata: json(chat),
         },
-        update: {
-          ...(chat.name !== undefined ? { name: chat.name } : {}),
-          ...(chat.unreadCount != null ? { unreadCount: chat.unreadCount } : {}),
-          ...(chat.archived != null ? { archived: chat.archived } : {}),
-          metadata: json(chat),
-        },
+        update: chatPatch(chat),
       });
     }
     if (chats.length) await emitEvent(this.accountId, 'chat.updated', { count: chats.length });
@@ -376,11 +422,7 @@ export class BaileysSession {
           phoneNumber: contact.id.split('@')[0] ?? null,
           metadata: json(contact),
         },
-        update: {
-          ...(contact.name !== undefined ? { name: contact.name } : {}),
-          ...(contact.notify !== undefined ? { notify: contact.notify } : {}),
-          metadata: json(contact),
-        },
+        update: contactPatch(contact),
       });
     }
     if (contacts.length) await emitEvent(this.accountId, 'contact.updated', { count: contacts.length });
@@ -463,46 +505,74 @@ export class BaileysSession {
     if (!this.socket || this.stopped || this.commandInFlight) return;
     this.commandInFlight = true;
     try {
+      // Reclaim only provably-dead claims: COMMAND_STALE_MS exceeds the execution
+      // timeout, so a live executor can never have its claim stolen mid-flight.
       await prisma.outboundCommand.updateMany({
         where: {
           accountId: this.accountId,
           status: 'processing',
           OR: [{ claimedBy: { not: config.workerId } }, { claimedBy: null }],
+          claimedAt: { lt: new Date(Date.now() - COMMAND_STALE_MS) },
         },
         data: { status: 'pending', claimedAt: null, claimedBy: null, availableAt: new Date() },
+      });
+      await prisma.outboundCommand.updateMany({
+        where: { accountId: this.accountId, status: 'pending', attemptCount: { gte: MAX_COMMAND_ATTEMPTS } },
+        data: { status: 'failed', error: `Command failed after ${MAX_COMMAND_ATTEMPTS} attempts`, completedAt: new Date() },
       });
       const command = await prisma.outboundCommand.findFirst({
         where: { accountId: this.accountId, status: 'pending', availableAt: { lte: new Date() } },
         orderBy: { createdAt: 'asc' },
       });
       if (!command) return;
-      if (command.type === 'pair.code' && !this.pairingTransportReady) return;
+      if (command.type === 'pair.code' ? !this.pairingTransportReady : !this.connectionOpen) return;
       const claimed = await prisma.outboundCommand.updateMany({
         where: { id: command.id, status: 'pending' },
         data: { status: 'processing', claimedBy: config.workerId, claimedAt: new Date(), attemptCount: { increment: 1 } },
       });
       if (!claimed.count) return;
+      // Terminal writes are fenced on our own live claim so a worker that lost its
+      // claim can neither clobber a re-claimer's state nor emit duplicate events.
+      const claim = { id: command.id, status: 'processing', claimedBy: config.workerId };
       try {
         const result = await withTimeout(
           this.executeCommand(command.type, command.payload as Record<string, unknown>),
-          110_000,
+          COMMAND_TIMEOUT_MS,
         );
-        await prisma.outboundCommand.update({
-          where: { id: command.id },
+        const completed = await prisma.outboundCommand.updateMany({
+          where: claim,
           data: { status: 'completed', result: json(result), completedAt: new Date(), error: null },
         });
-        await emitEvent(this.accountId, 'command.completed', { command_id: command.id, type: command.type });
+        if (completed.count === 1) {
+          await emitEvent(this.accountId, 'command.completed', { command_id: command.id, type: command.type });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await prisma.outboundCommand.update({
-          where: { id: command.id },
+        if (this.stopped || !this.connectionOpen) {
+          // The socket died mid-command; requeue so the next connection retries it.
+          await prisma.outboundCommand.updateMany({
+            where: claim,
+            data: { status: 'pending', claimedBy: null, claimedAt: null, availableAt: new Date() },
+          });
+          return;
+        }
+        const failed = await prisma.outboundCommand.updateMany({
+          where: claim,
           data: { status: 'failed', error: message, completedAt: new Date() },
         });
-        await emitEvent(this.accountId, 'command.failed', { command_id: command.id, type: command.type, error: message });
+        if (failed.count === 1) {
+          if (command.type === 'message.send.media') await this.dropStagedUpload(command.payload);
+          await emitEvent(this.accountId, 'command.failed', { command_id: command.id, type: command.type, error: message });
+        }
       }
     } finally {
       this.commandInFlight = false;
     }
+  }
+
+  private async dropStagedUpload(payload: unknown) {
+    const uploadId = String((payload as { upload_id?: unknown } | null)?.upload_id ?? '');
+    if (uploadId) await prisma.whatsAppMediaUpload.deleteMany({ where: { id: uploadId, accountId: this.accountId } });
   }
 
   private async executeCommand(type: string, payload: Record<string, unknown>): Promise<unknown> {
@@ -549,14 +619,12 @@ export class BaileysSession {
           : kind === 'audio' ? { audio: buffer, mimetype, ptt: upload.voice }
           : kind === 'sticker' ? { sticker: buffer }
           : { document: buffer, mimetype, fileName, ...(caption ? { caption } : {}) };
-        try {
-          const sent = await socket.sendMessage(jid, content as Parameters<WASocket['sendMessage']>[1]);
-          if (sent) await this.persistMessage(sent, false);
-          return { jid, message_id: sent?.key.id ?? null, kind, bytes: buffer.length };
-        } finally {
-          // The staged bytes are single-use; drop them either way.
-          await prisma.whatsAppMediaUpload.deleteMany({ where: { id: upload.id } });
-        }
+        const sent = await socket.sendMessage(jid, content as Parameters<WASocket['sendMessage']>[1]);
+        if (sent) await this.persistMessage(sent, false);
+        // Staged bytes are dropped only on success or terminal failure, so a
+        // requeued send (socket died mid-command) still has its payload.
+        await prisma.whatsAppMediaUpload.deleteMany({ where: { id: upload.id } });
+        return { jid, message_id: sent?.key.id ?? null, kind, bytes: buffer.length };
       }
       case 'group.create': {
         const subject = String(payload.subject ?? '');

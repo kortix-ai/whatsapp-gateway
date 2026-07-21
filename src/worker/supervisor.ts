@@ -94,8 +94,10 @@ export class SessionSupervisor {
   }
 
   private async closed(accountId: string) {
+    // Release before removing from the map so the poll cannot start a successor
+    // session whose lease this release would then delete out from under it.
+    await releaseLease(accountId).catch((error) => logger.error({ error, accountId }, 'Failed to release WhatsApp session lease'));
     this.sessions.delete(accountId);
-    await releaseLease(accountId);
   }
 }
 

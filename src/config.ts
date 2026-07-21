@@ -19,6 +19,7 @@ const schema = z.object({
   LEASE_TTL_SECONDS: z.coerce.number().int().min(10).default(30),
   LEASE_HEARTBEAT_SECONDS: z.coerce.number().int().min(3).default(10),
   RECONNECT_STABLE_SECONDS: z.coerce.number().int().min(10).default(300),
+  SYNC_FULL_HISTORY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   PAIRING_TTL_SECONDS: z.coerce.number().int().min(60).default(300),
   WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(1000),
   WEBHOOK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
