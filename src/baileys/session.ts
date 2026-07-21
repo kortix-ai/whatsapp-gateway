@@ -21,6 +21,7 @@ import { emitEvent } from '../services/events.js';
 import { passthroughEvents } from '../services/event-types.js';
 import { createPostgresAuthState } from './auth-state.js';
 import { createProxyAgent, createProxyDispatcher, redactProxy } from './proxy.js';
+import { resolveWaVersion } from './wa-version.js';
 import { baileysActions, isBaileysAction } from './actions.js';
 import { resetReconnectBackoff, scheduleReconnect } from '../worker/reconnect.js';
 
@@ -158,13 +159,16 @@ export class BaileysSession {
     const browser = config.WA_BROWSER === 'windows' ? Browsers.windows('Chrome')
       : config.WA_BROWSER === 'ubuntu' ? Browsers.ubuntu('Chrome')
       : Browsers.macOS('Chrome');
+    const version = await resolveWaVersion();
     this.socket = makeWASocket({
       auth: authState.state,
       logger: this.log as never,
+      version,
       browser,
       markOnlineOnConnect: false,
       syncFullHistory: config.SYNC_FULL_HISTORY,
       generateHighQualityLinkPreview: false,
+      ...(config.WA_COUNTRY_CODE ? { countryCode: config.WA_COUNTRY_CODE } : {}),
       ...(proxyAgent ? { agent: proxyAgent, fetchAgent: proxyFetch as typeof proxyAgent } : {}),
       // Serve retry receipts from the persisted message store: when a recipient
       // cannot decrypt one of our sends, Baileys re-encrypts from here — without

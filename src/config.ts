@@ -27,6 +27,11 @@ const schema = z.object({
   // desktop looks more human than a server distro; the important thing is that it never
   // changes across reconnects (a rotating fingerprint is itself a bot signal).
   WA_BROWSER: z.enum(['macos', 'windows', 'ubuntu']).default('macos'),
+  // Pin the WhatsApp Web version as "major,minor,patch"; empty auto-tracks the latest.
+  WA_WEB_VERSION: z.string().optional().transform((value) => value?.trim() || undefined),
+  // Locale country in the login payload. Default US is the global norm; set to the
+  // number's country (e.g. GB) so the reported locale matches the account.
+  WA_COUNTRY_CODE: z.string().length(2).optional().transform((value) => value?.toUpperCase()),
   PAIRING_TTL_SECONDS: z.coerce.number().int().min(60).default(300),
   WEBHOOK_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(1000),
   WEBHOOK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(10),
@@ -38,6 +43,12 @@ const schema = z.object({
 });
 
 const parsed = schema.parse(process.env);
+if (parsed.WA_WEB_VERSION) {
+  const parts = parsed.WA_WEB_VERSION.split(',').map((part) => Number(part.trim()));
+  if (parts.length !== 3 || parts.some(Number.isNaN)) {
+    throw new Error('WA_WEB_VERSION must be three numbers, e.g. "2,3000,1035194821"');
+  }
+}
 if (parsed.WA_PROXY_URL) {
   const scheme = new URL(parsed.WA_PROXY_URL).protocol.replace(':', '').toLowerCase();
   if (!['http', 'https', 'socks', 'socks4', 'socks5'].includes(scheme)) {
