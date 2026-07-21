@@ -76,6 +76,15 @@ export class WebhookDispatcher {
       while (!this.stopped && this.deliveries.size < config.WEBHOOK_CONCURRENCY) {
         const delivery = await claimWebhookDelivery();
         if (!delivery) break;
+        if (this.stopped) {
+          // Claimed mid-shutdown: hand the delivery back untouched instead of
+          // sending through an agent that stop() is about to close.
+          await prisma.webhookDelivery.update({
+            where: { id: delivery.id },
+            data: { status: 'retrying', nextAttemptAt: new Date(), attemptCount: { decrement: 1 } },
+          });
+          break;
+        }
         const task = this.deliver(delivery).finally(() => {
           this.deliveries.delete(task);
           if (!this.stopped) queueMicrotask(() => this.runTick());
@@ -100,6 +109,10 @@ export class WebhookDispatcher {
     const body = JSON.stringify(eventBody);
     const timestamp = String(Math.floor(Date.now() / 1000));
     try {
+      // Fail closed: never fall back to the global dispatcher, which would skip
+      // the agent's SSRF lookup, timeouts, and response cap.
+      const agent = this.agent;
+      if (!agent) throw new Error('Webhook dispatcher is stopping');
       const url = await validateWebhookUrl(delivery.endpoint.url);
       const secret = decryptJson<string>(delivery.endpoint.secret);
       const request: RequestInit = {
@@ -115,7 +128,7 @@ export class WebhookDispatcher {
         body,
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
-        ...(this.agent ? { dispatcher: this.agent } : {}),
+        dispatcher: agent,
       };
       const response = await fetch(url, request);
       const responseBody = (await response.text()).slice(0, 4_096);

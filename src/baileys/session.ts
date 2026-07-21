@@ -516,10 +516,21 @@ export class BaileysSession {
         },
         data: { status: 'pending', claimedAt: null, claimedBy: null, availableAt: new Date() },
       });
-      await prisma.outboundCommand.updateMany({
+      const exhausted = await prisma.outboundCommand.findMany({
         where: { accountId: this.accountId, status: 'pending', attemptCount: { gte: MAX_COMMAND_ATTEMPTS } },
-        data: { status: 'failed', error: `Command failed after ${MAX_COMMAND_ATTEMPTS} attempts`, completedAt: new Date() },
+        select: { id: true, type: true, payload: true },
       });
+      for (const poison of exhausted) {
+        const message = `Command failed after ${MAX_COMMAND_ATTEMPTS} attempts`;
+        const failed = await prisma.outboundCommand.updateMany({
+          where: { id: poison.id, status: 'pending' },
+          data: { status: 'failed', error: message, completedAt: new Date() },
+        });
+        if (failed.count === 1) {
+          if (poison.type === 'message.send.media') await this.dropStagedUpload(poison.payload);
+          await emitEvent(this.accountId, 'command.failed', { command_id: poison.id, type: poison.type, error: message });
+        }
+      }
       const command = await prisma.outboundCommand.findFirst({
         where: { accountId: this.accountId, status: 'pending', availableAt: { lte: new Date() } },
         orderBy: { createdAt: 'asc' },
@@ -548,7 +559,10 @@ export class BaileysSession {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (this.stopped || !this.connectionOpen) {
+        // Mirror the execution gate: pair.code runs before the connection opens,
+        // so its transport is the pairing socket, not an open connection.
+        const transportLost = command.type === 'pair.code' ? !this.pairingTransportReady : !this.connectionOpen;
+        if (this.stopped || transportLost) {
           // The socket died mid-command; requeue so the next connection retries it.
           await prisma.outboundCommand.updateMany({
             where: claim,
