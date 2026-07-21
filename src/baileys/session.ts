@@ -20,7 +20,7 @@ import { logger } from '../logger.js';
 import { emitEvent } from '../services/events.js';
 import { passthroughEvents } from '../services/event-types.js';
 import { createPostgresAuthState } from './auth-state.js';
-import { createProxyAgent, redactProxy } from './proxy.js';
+import { createProxyAgent, createProxyDispatcher, redactProxy } from './proxy.js';
 import { baileysActions, isBaileysAction } from './actions.js';
 import { resetReconnectBackoff, scheduleReconnect } from '../worker/reconnect.js';
 
@@ -151,6 +151,9 @@ export class BaileysSession {
       this.pairingTimer.unref();
     }
     const proxyAgent = config.WA_PROXY_URL ? createProxyAgent(config.WA_PROXY_URL) : undefined;
+    // WS uses the node http agent; media (fetch) prefers the undici dispatcher, falling back
+    // to the http agent for SOCKS. Either way media exits through the same residential IP.
+    const proxyFetch = config.WA_PROXY_URL ? (createProxyDispatcher(config.WA_PROXY_URL) ?? proxyAgent) : undefined;
     if (config.WA_PROXY_URL) this.log.info({ proxy: redactProxy(config.WA_PROXY_URL) }, 'Routing WhatsApp socket through proxy');
     this.socket = makeWASocket({
       auth: authState.state,
@@ -159,7 +162,7 @@ export class BaileysSession {
       markOnlineOnConnect: false,
       syncFullHistory: config.SYNC_FULL_HISTORY,
       generateHighQualityLinkPreview: false,
-      ...(proxyAgent ? { agent: proxyAgent, fetchAgent: proxyAgent } : {}),
+      ...(proxyAgent ? { agent: proxyAgent, fetchAgent: proxyFetch as typeof proxyAgent } : {}),
       // Serve retry receipts from the persisted message store: when a recipient
       // cannot decrypt one of our sends, Baileys re-encrypts from here — without
       // it the recipient is stuck on "waiting for this message".
