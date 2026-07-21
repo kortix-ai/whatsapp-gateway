@@ -156,6 +156,19 @@ export class BaileysSession {
       markOnlineOnConnect: false,
       syncFullHistory: config.SYNC_FULL_HISTORY,
       generateHighQualityLinkPreview: false,
+      // Serve retry receipts from the persisted message store: when a recipient
+      // cannot decrypt one of our sends, Baileys re-encrypts from here — without
+      // it the recipient is stuck on "waiting for this message".
+      getMessage: async (key) => {
+        if (!key.id) return undefined;
+        const stored = await prisma.whatsAppMessage.findUnique({
+          where: { accountId_whatsappMessageId: { accountId: this.accountId, whatsappMessageId: key.id } },
+          select: { payload: true },
+        });
+        if (!stored) return undefined;
+        const revived = JSON.parse(JSON.stringify(stored.payload), BufferJSON.reviver) as WAMessage;
+        return revived.message ?? undefined;
+      },
     });
 
     await prisma.whatsAppAccount.update({
@@ -256,7 +269,9 @@ export class BaileysSession {
             },
           });
         } else {
-          const retry = await scheduleReconnect(this.accountId, message);
+          const retry = await scheduleReconnect(this.accountId, message, {
+            immediate: code === DisconnectReason.restartRequired,
+          });
           this.log.warn({ ...retry }, 'Scheduled WhatsApp reconnect');
         }
         await emitEvent(this.accountId, 'connection.closed', { code, logged_out: loggedOut, reason, message });

@@ -9,14 +9,21 @@ export function reconnectDelayMs(attempt: number, random = Math.random): number 
   return exponential + jitter;
 }
 
-export async function scheduleReconnect(accountId: string, error: string): Promise<{ attempt: number; nextConnectAt: Date }> {
+export async function scheduleReconnect(
+  accountId: string,
+  error: string,
+  options?: { immediate?: boolean },
+): Promise<{ attempt: number; nextConnectAt: Date }> {
   return prisma.$transaction(async (tx) => {
     const account = await tx.whatsAppAccount.findUniqueOrThrow({
       where: { id: accountId },
       select: { reconnectAttempt: true },
     });
     const attempt = account.reconnectAttempt + 1;
-    const nextConnectAt = new Date(Date.now() + reconnectDelayMs(attempt));
+    // Immediate restarts (WhatsApp's mandatory 515 after pairing) skip the delay
+    // for the first attempts; a pathological restart loop still degrades to backoff.
+    const delayMs = options?.immediate && attempt <= 2 ? 0 : reconnectDelayMs(attempt);
+    const nextConnectAt = new Date(Date.now() + delayMs);
     await tx.whatsAppAccount.update({
       where: { id: accountId },
       data: { status: 'reconnecting', reconnectAttempt: attempt, nextConnectAt, lastError: error },
