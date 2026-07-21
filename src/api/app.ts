@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { BufferJSON, downloadMediaMessage, getContentType, type WAMessage, type WAMessageContent } from 'baileys';
 import { Scalar } from '@scalar/hono-api-reference';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -13,7 +13,7 @@ import { prisma } from '../db/prisma.js';
 import { id } from '../ids.js';
 import { logger } from '../logger.js';
 import { buildAgentCapabilities, buildAgentSkill, buildChatSkill } from '../skill.js';
-import { commandEnvelope, enqueueCommand, IdempotencyConflictError, waitForCommand } from '../services/commands.js';
+import { CommandNotFoundError, enqueueCommand, IdempotencyConflictError, waitForCommand } from '../services/commands.js';
 import { gatewayEventTypes } from '../services/event-types.js';
 import { validateWebhookUrl } from '../webhooks/url-security.js';
 import { openApiDocument } from './openapi.js';
@@ -88,6 +88,19 @@ function commandStatus(result: { status: string }): 200 | 202 {
   return result.status === 'pending' || result.status === 'processing' ? 202 : 200;
 }
 
+/** Enqueue a durable command, wait for its result, and answer 200 (terminal) or 202 (still pending). */
+async function dispatchCommand(
+  context: Context<{ Variables: GatewayVariables }>,
+  account: { id: string; tenantId: string },
+  type: string,
+  payload: unknown,
+  timeoutMs = 30_000,
+) {
+  const commandId = await enqueueCommand(account.tenantId, account.id, type, payload, idempotencyKey(context));
+  const result = await waitForCommand(commandId, timeoutMs);
+  return context.json(result, commandStatus(result));
+}
+
 // Every action is annotated with whether the calling credential may actually
 // run it, so clients can present exactly the surface a key is authorized for.
 // `?allowed=true` returns only the permitted actions.
@@ -116,30 +129,21 @@ app.post('/v1/accounts/:accountId/actions/:action', requireAuth(), async (contex
   }
   const input = await body(context, z.object({ args: z.array(z.unknown()).default([]) }));
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', { action, args: input.args }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'socket.action', { action, args: input.args });
 });
 
 app.get('/v1/commands/:commandId', requireAuth(), async (context) => {
   const actor = context.get('actor');
   const waitSeconds = Math.min(Math.max(Number(context.req.query('wait_seconds') ?? 0), 0), 30);
-  const deadline = Date.now() + waitSeconds * 1000;
-  while (true) {
-    const command = await prisma.outboundCommand.findFirst({
-      where: {
-        id: context.req.param('commandId'),
-        tenantId: actor.tenantId,
-        ...(actor.accountIds ? { accountId: { in: actor.accountIds } } : {}),
-      },
-      select: {
-        id: true, accountId: true, type: true, status: true, result: true, error: true,
-        attemptCount: true, idempotencyKey: true, createdAt: true, updatedAt: true, completedAt: true,
-      },
+  try {
+    const result = await waitForCommand(context.req.param('commandId'), waitSeconds * 1000, {
+      tenantId: actor.tenantId,
+      ...(actor.accountIds ? { accountId: { in: actor.accountIds } } : {}),
     });
-    if (!command) throw new HTTPException(404, { message: 'Command not found' });
-    if (command.status === 'completed' || command.status === 'failed' || Date.now() >= deadline) return context.json(commandEnvelope(command));
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    return context.json(result);
+  } catch (error) {
+    if (error instanceof CommandNotFoundError) throw new HTTPException(404, { message: 'Command not found' });
+    throw error;
   }
 });
 
@@ -341,17 +345,13 @@ app.post('/v1/accounts/:accountId/pair/code', requireAuth({ resource: 'accounts'
       pairingExpiresAt: new Date(Date.now() + config.PAIRING_TTL_SECONDS * 1000),
     },
   });
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'pair.code', { phone_number: phoneNumber }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 20_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'pair.code', { phone_number: phoneNumber }, 20_000);
 });
 
 app.delete('/v1/accounts/:accountId/session', requireAuth({ resource: 'accounts', action: 'disconnect' }), async (context) => {
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'account.logout', {}, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 20_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'account.logout', {}, 20_000);
 });
 
 app.get('/v1/accounts/:accountId/chats', requireAuth({ resource: 'messages', action: 'read' }), async (context) => {
@@ -404,6 +404,7 @@ app.get('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', 
   const messageType = context.req.query('type');
   const senderJid = context.req.query('sender_jid');
   const search = context.req.query('q');
+  const messageId = context.req.query('message_id');
   const unreadChatIds = unreadOnly
     ? (await prisma.whatsAppChat.findMany({ where: { accountId: account.id, unreadCount: { gt: 0 } }, select: { jid: true } })).map((chat) => chat.jid)
     : undefined;
@@ -417,6 +418,7 @@ app.get('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', 
       ...(messageType ? { messageType } : {}),
       ...(senderJid ? { senderJid } : {}),
       ...(search ? { text: { contains: search, mode: 'insensitive' as const } } : {}),
+      ...(messageId ? { OR: [{ id: messageId }, { whatsappMessageId: messageId }] } : {}),
       ...((beforeDate || since) ? { messageTimestamp: { ...(beforeDate ? { lt: beforeDate } : {}), ...(since ? { gte: since } : {}) } } : {}),
     },
     orderBy: { messageTimestamp: 'desc' },
@@ -543,11 +545,7 @@ app.post('/v1/accounts/:accountId/messages/media', requireAuth({ resource: 'mess
   });
 
   try {
-    const commandId = await enqueueCommand(actor.tenantId, account.id, 'message.send.media', {
-      to, upload_id: upload.id,
-    }, idempotencyKey(context));
-    const result = await waitForCommand(commandId, 120_000);
-    return context.json(result, commandStatus(result));
+    return await dispatchCommand(context, account, 'message.send.media', { to, upload_id: upload.id }, 120_000);
   } catch (error) {
     await prisma.whatsAppMediaUpload.deleteMany({ where: { id: upload.id } });
     throw error;
@@ -566,12 +564,7 @@ app.post('/v1/accounts/:accountId/messages/:messageId/reaction', requireAuth({ r
   if (!message) throw new HTTPException(404, { message: 'Message not found' });
   const key = (message.payload as { key?: unknown } | null)?.key;
   if (!key) throw new HTTPException(422, { message: 'This message cannot be reacted to' });
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'message.send', {
-    to: message.chatJid,
-    content: { react: { text: input.emoji, key } },
-  }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'message.send', { to: message.chatJid, content: { react: { text: input.emoji, key } } });
 });
 
 // Mark a stored message as read.
@@ -585,11 +578,7 @@ app.post('/v1/accounts/:accountId/messages/:messageId/read', requireAuth({ resou
   if (!message) throw new HTTPException(404, { message: 'Message not found' });
   const key = (message.payload as { key?: unknown } | null)?.key;
   if (!key) throw new HTTPException(422, { message: 'This message cannot be marked as read' });
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', {
-    action: 'messages.read', args: [[key]],
-  }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'socket.action', { action: 'messages.read', args: [[key]] });
 });
 
 // Chat state: archive, pin, mute, and read/unread in one resource update.
@@ -611,11 +600,7 @@ app.patch('/v1/accounts/:accountId/chats/:chatJid', requireAuth({ resource: 'cha
   if (input.muted !== undefined) modification.mute = input.muted ? (input.mute_seconds ?? 8 * 60 * 60) * 1000 : null;
   if (input.read !== undefined) modification.markRead = input.read;
 
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', {
-    action: 'chats.modify', args: [modification, chatJid],
-  }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'socket.action', { action: 'chats.modify', args: [modification, chatJid] });
 });
 
 // Broadcast presence (available, unavailable, composing, recording, paused).
@@ -626,11 +611,7 @@ app.post('/v1/accounts/:accountId/presence', requireAuth({ resource: 'presence',
   }));
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'socket.action', {
-    action: 'presence.update', args: input.to ? [input.state, input.to] : [input.state],
-  }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'socket.action', { action: 'presence.update', args: input.to ? [input.state, input.to] : [input.state] });
 });
 
 app.post('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', action: 'send' }), async (context) => {
@@ -641,46 +622,36 @@ app.post('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages',
   }).refine((value) => value.text !== undefined || value.content !== undefined, 'text or content is required'));
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'message.send', input, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'message.send', input);
 });
 
 app.post('/v1/accounts/:accountId/groups', requireAuth({ resource: 'groups', action: 'write' }), async (context) => {
   const input = await body(context, z.object({ subject: z.string().min(1).max(100), participants: z.array(z.string()).min(1) }));
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'group.create', input, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'group.create', input);
 });
 
 app.patch('/v1/accounts/:accountId/groups/:groupId', requireAuth({ resource: 'groups', action: 'write' }), async (context) => {
   const input = await body(context, z.object({ subject: z.string().min(1).max(100).optional(), description: z.string().max(2048).optional() }));
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'group.update', { group_id: context.req.param('groupId'), ...input }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'group.update', { group_id: context.req.param('groupId'), ...input });
 });
 
 app.post('/v1/accounts/:accountId/groups/:groupId/participants', requireAuth({ resource: 'groups', action: 'write' }), async (context) => {
   const input = await body(context, z.object({ participants: z.array(z.string()).min(1), action: z.enum(['add', 'remove', 'promote', 'demote']).default('add') }));
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'group.participants', { group_id: context.req.param('groupId'), ...input }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  return dispatchCommand(context, account, 'group.participants', { group_id: context.req.param('groupId'), ...input });
 });
 
 app.delete('/v1/accounts/:accountId/groups/:groupId/participants/:participantId', requireAuth({ resource: 'groups', action: 'write' }), async (context) => {
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
-  const commandId = await enqueueCommand(actor.tenantId, account.id, 'group.participants', {
+  return dispatchCommand(context, account, 'group.participants', {
     group_id: context.req.param('groupId'), participants: [context.req.param('participantId')], action: 'remove',
-  }, idempotencyKey(context));
-  const result = await waitForCommand(commandId, 30_000);
-  return context.json(result, commandStatus(result));
+  });
 });
 
 app.get('/v1/webhook-endpoints', requireAuth({ resource: 'webhooks', action: 'read' }), async (context) => {

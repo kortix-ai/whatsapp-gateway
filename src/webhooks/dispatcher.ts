@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { fetch, type RequestInit } from 'undici';
+import { fetch, type Agent, type RequestInit } from 'undici';
 import { config } from '../config.js';
 import { decryptJson, signWebhook } from '../crypto.js';
 import { prisma } from '../db/prisma.js';
@@ -43,11 +43,12 @@ export class WebhookDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private tickRunning = false;
-  private active = 0;
+  private agent: Agent | null = null;
   private readonly deliveries = new Set<Promise<void>>();
 
   start() {
     logger.info({ concurrency: config.WEBHOOK_CONCURRENCY }, 'Starting webhook delivery worker');
+    this.agent = createWebhookAgent();
     this.runTick();
     this.timer = setInterval(() => this.runTick(), config.WEBHOOK_POLL_INTERVAL_MS);
   }
@@ -56,6 +57,8 @@ export class WebhookDispatcher {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     await Promise.allSettled(this.deliveries);
+    await this.agent?.close();
+    this.agent = null;
   }
 
   private runTick() {
@@ -70,12 +73,10 @@ export class WebhookDispatcher {
         where: { status: 'processing', updatedAt: { lt: new Date(Date.now() - DELIVERY_LEASE_MS) } },
         data: { status: 'retrying', nextAttemptAt: new Date(), lastError: 'Delivery worker lease expired' },
       });
-      while (!this.stopped && this.active < config.WEBHOOK_CONCURRENCY) {
+      while (!this.stopped && this.deliveries.size < config.WEBHOOK_CONCURRENCY) {
         const delivery = await claimWebhookDelivery();
         if (!delivery) break;
-        this.active += 1;
         const task = this.deliver(delivery).finally(() => {
-          this.active -= 1;
           this.deliveries.delete(task);
           if (!this.stopped) queueMicrotask(() => this.runTick());
         });
@@ -98,7 +99,6 @@ export class WebhookDispatcher {
     };
     const body = JSON.stringify(eventBody);
     const timestamp = String(Math.floor(Date.now() / 1000));
-    const agent = createWebhookAgent();
     try {
       const url = await validateWebhookUrl(delivery.endpoint.url);
       const secret = decryptJson<string>(delivery.endpoint.secret);
@@ -115,7 +115,7 @@ export class WebhookDispatcher {
         body,
         redirect: 'manual',
         signal: AbortSignal.timeout(10_000),
-        ...(agent ? { dispatcher: agent } : {}),
+        ...(this.agent ? { dispatcher: this.agent } : {}),
       };
       const response = await fetch(url, request);
       const responseBody = (await response.text()).slice(0, 4_096);
@@ -142,8 +142,6 @@ export class WebhookDispatcher {
         },
       });
       logger.warn({ deliveryId: delivery.id, attempts, dead, error }, 'Webhook delivery failed');
-    } finally {
-      await agent?.close();
     }
   }
 }

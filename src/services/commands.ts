@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma.js';
 import { id } from '../ids.js';
 
 export class IdempotencyConflictError extends Error {}
+export class CommandNotFoundError extends Error {}
 
 type CommandRecord = {
   id: string;
@@ -84,11 +85,11 @@ export async function enqueueCommand(
   return commandId;
 }
 
-export async function waitForCommand(commandId: string, timeoutMs = 30_000) {
+export async function waitForCommand(commandId: string, timeoutMs = 30_000, scope: Prisma.OutboundCommandWhereInput = {}) {
   const deadline = Date.now() + timeoutMs;
   while (true) {
-    const command = await prisma.outboundCommand.findUnique({
-      where: { id: commandId },
+    const command = await prisma.outboundCommand.findFirst({
+      where: { id: commandId, ...scope },
       select: {
         id: true,
         accountId: true,
@@ -103,7 +104,7 @@ export async function waitForCommand(commandId: string, timeoutMs = 30_000) {
         completedAt: true,
       },
     });
-    if (!command) throw new Error('Command not found');
+    if (!command) throw new CommandNotFoundError('Command not found');
     if (command.status === 'completed' || command.status === 'failed' || Date.now() >= deadline) {
       return commandEnvelope(command);
     }

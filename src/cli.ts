@@ -80,7 +80,6 @@ function required(value: string | undefined, message: string): string {
 const baseUrl = (str('base-url') ?? process.env.WHATSAPP_GATEWAY_URL ?? 'http://localhost:8080').replace(/\/$/, '');
 const apiKey = str('api-key') ?? process.env.WHATSAPP_GATEWAY_API_KEY;
 const asJson = bool('json');
-const asEvents = bool('events');
 const readOnly = bool('read-only') || process.env.WAG_READONLY === 'true';
 const timeoutMs = (num('timeout') ?? 60) * 1000;
 const idempotencyKey = str('idempotency-key');
@@ -89,6 +88,9 @@ const idempotencyKey = str('idempotency-key');
 
 async function request(path: string, init: RequestInit = {}): Promise<Json> {
   if (!apiKey) throw new UsageError('Set WHATSAPP_GATEWAY_API_KEY or pass --api-key');
+  // Every mutation is a non-GET through this chokepoint, so the guard cannot drift.
+  const method = (init.method ?? 'GET').toUpperCase();
+  if (readOnly && method !== 'GET') throw new BlockedError(`--read-only blocks ${method} ${path}.`);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -232,16 +234,6 @@ async function recipient(value: string): Promise<string> {
 
 /* ------------------------------------------------------------------ commands */
 
-const MUTATIONS = new Set(['send', 'chats', 'groups', 'presence', 'profile', 'channels', 'auth', 'accounts']);
-const READ_SUBCOMMANDS = new Set(['list', 'status', 'get', 'search', 'media', 'info', 'coverage']);
-
-function guardReadOnly(domain: string, action: string): void {
-  if (!readOnly) return;
-  if (!MUTATIONS.has(domain)) return;
-  if (READ_SUBCOMMANDS.has(action)) return;
-  throw new BlockedError(`--read-only blocks "${domain} ${action}".`);
-}
-
 async function runAction(accountId: string, action: string, args: unknown[]): Promise<Json> {
   return request(`/v1/accounts/${accountId}/actions/${encodeURIComponent(action)}`, json({ args }));
 }
@@ -257,7 +249,7 @@ const HELP = `wag — WhatsApp Gateway CLI
 
 Global
   --account NAME     connection id or name (env WAG_ACCOUNT; optional when only one)
-  --json             structured JSON output      --events   NDJSON stream
+  --json             structured JSON output
   --read-only        block every mutation        --pick N   disambiguate a recipient
   --timeout SECONDS  --base-url URL  --api-key KEY  --idempotency-key KEY
 
@@ -310,8 +302,6 @@ async function main(): Promise<void> {
     if (!health || !ready || !authed) process.exitCode = 1;
     return;
   }
-
-  guardReadOnly(domain, action ?? '');
 
   /* ---- auth ---- */
   if (domain === 'auth') {
@@ -389,9 +379,8 @@ async function main(): Promise<void> {
       const replyTo = str('reply');
       const content: Row = { text: message, ...(mentions.length ? { mentions } : {}) };
       if (replyTo) {
-        const messages = await data<{ id: string; whatsappMessageId?: string; payload?: unknown }>(`/v1/accounts/${accountId}/messages?limit=200`);
-        const quoted = messages.find((entry) => entry.id === replyTo || entry.whatsappMessageId === replyTo);
-        if (!quoted?.payload) throw new ResolveError('Reply target was not found in the recent messages.');
+        const [quoted] = await data<{ payload?: unknown }>(`/v1/accounts/${accountId}/messages?message_id=${encodeURIComponent(replyTo)}&limit=1`);
+        if (!quoted?.payload) throw new ResolveError('Reply target message was not found.');
         record(await runAction(accountId, 'messages.send', [to, content, { quoted: quoted.payload }]) as Row);
         return;
       }
@@ -644,6 +633,3 @@ main().catch((error: unknown) => {
   else if (error instanceof ResolveError) process.exitCode = 4;
   else process.exitCode = 1;
 });
-
-// `--events` currently applies to `events tail`, which always streams NDJSON.
-void asEvents;

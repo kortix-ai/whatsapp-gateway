@@ -200,6 +200,7 @@ export const openApiDocument = {
           { name: 'status', in: 'query', schema: { type: 'string' } },
           { name: 'type', in: 'query', schema: { type: 'string' } },
           { name: 'sender_jid', in: 'query', schema: { type: 'string' } },
+          { name: 'message_id', in: 'query', schema: { type: 'string' }, description: 'Exact match on the gateway or WhatsApp message id' },
           { name: 'since', in: 'query', schema: { type: 'string', format: 'date-time' } },
         ], responses: { '200': { description: 'Messages and pagination cursor' } },
       },

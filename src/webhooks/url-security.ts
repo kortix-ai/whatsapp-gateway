@@ -64,14 +64,14 @@ export function createPublicLookup(resolve: ResolveAll = resolveAll): LookupFunc
   };
 }
 
-export function createWebhookAgent(): Agent | undefined {
-  if (config.ALLOW_PRIVATE_WEBHOOKS) return undefined;
+export function createWebhookAgent(): Agent {
   return new Agent({
-    connect: { lookup: createPublicLookup(), timeout: 10_000 },
+    // The public-only lookup re-validates every new connection; the dev-only
+    // ALLOW_PRIVATE_WEBHOOKS flag skips that single check, nothing else.
+    connect: { ...(config.ALLOW_PRIVATE_WEBHOOKS ? {} : { lookup: createPublicLookup() }), timeout: 10_000 },
     bodyTimeout: 10_000,
     headersTimeout: 10_000,
     maxResponseSize: 64 * 1024,
-    connections: 1,
     pipelining: 1,
   });
 }
