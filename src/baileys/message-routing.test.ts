@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { bareJid, isGroupJid, mentionedJids } from './session.js';
+import { messageText } from './session.js';
 
 /**
  * The routing facts a webhook consumer binds on. A group is a different
@@ -35,5 +36,32 @@ describe('message routing signals', () => {
     expect(mentionedJids({ message: { conversation: 'hello' } } as never)).toEqual([]);
     expect(mentionedJids({ message: null } as never)).toEqual([]);
     expect(mentionedJids({} as never)).toEqual([]);
+  });
+});
+
+/**
+ * WhatsApp delivers a reaction as a message whose content is `reactionMessage`,
+ * with no text of its own. Routing it as a plain message wakes a consumer with
+ * an empty body and no way to distinguish a thumbs-up from someone sending
+ * nothing at all — so it gets its own event type carrying the emoji.
+ */
+describe('reactions are routed as reactions, not as empty messages', () => {
+  const reaction = {
+    message: {
+      reactionMessage: {
+        text: '👍',
+        key: { id: '3B513F1266686AD1E234', fromMe: false, remoteJid: '120363@g.us' },
+      },
+    },
+  } as never;
+
+  it('carries no message text, which is why it must not be a message event', () => {
+    // messageText() returns null here: a consumer woken on `message.received`
+    // would render an empty prompt.
+    expect(messageText(reaction)).toBeNull();
+  });
+
+  it('is not confused with a normal text message', () => {
+    expect(messageText({ message: { conversation: 'hello' } } as never)).toBe('hello');
   });
 });

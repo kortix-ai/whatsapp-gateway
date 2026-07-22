@@ -49,6 +49,12 @@ const syntheticEvents = [
   'message.created',
   'message.received', 'message.sent',
   'group.message.received', 'group.message.sent',
+  // A reaction arrives as a message whose content is `reactionMessage`. It gets
+  // its own type rather than `message.received`, because a consumer that woke on
+  // it would see empty text and could not tell a thumbs-up from silence. The
+  // payload carries the emoji and the message it points at.
+  'message.reaction.received', 'message.reaction.sent',
+  'group.message.reaction.received', 'group.message.reaction.sent',
   'message.updated', 'message.deleted',
   'history.synced',
   'chat.updated', 'chat.deleted', 'contact.updated',

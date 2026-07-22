@@ -92,7 +92,7 @@ function contactPatch(contact: { name?: string | null; notify?: string | null })
   };
 }
 
-function messageText(message: WAMessage): string | null {
+export function messageText(message: WAMessage): string | null {
   const body = message.message;
   if (!body) return null;
   return body.conversation
@@ -567,6 +567,28 @@ export class BaileysSession {
     if (emit) {
       const surface = isGroupJid(stored.chatJid) ? 'group.' : '';
       const action = stored.direction === 'inbound' ? 'received' : 'sent';
+      // A reaction is not a message to reply to. WhatsApp delivers it as a
+      // message whose content is `reactionMessage`, so emitting it as
+      // `message.received` wakes a consumer with empty text and no way to tell a
+      // thumbs-up from someone sending nothing. Give it its own event carrying
+      // the emoji and the message it points at; an empty emoji means the
+      // reaction was removed.
+      const reaction = message.message?.reactionMessage;
+      if (reaction) {
+        await emitEvent(this.accountId, `${surface}message.reaction.${action}`, {
+          id: stored.id,
+          whatsapp_message_id: stored.whatsappMessageId,
+          chat_jid: stored.chatJid,
+          sender_jid: stored.senderJid,
+          direction: stored.direction,
+          emoji: reaction.text ?? '',
+          removed: !reaction.text,
+          target_message_id: reaction.key?.id ?? null,
+          target_from_me: reaction.key?.fromMe ?? null,
+          timestamp: stored.messageTimestamp.toISOString(),
+        });
+        return;
+      }
       // Whether this message addresses US. A group can be busy, and "only wake
       // the agent when spoken to" is the difference between a useful bot and an
       // expensive one — so it has to be answerable from the payload, without a
