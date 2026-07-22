@@ -1,9 +1,8 @@
-import { BufferJSON, downloadMediaMessage, getContentType, type MediaDownloadOptions, type WAMessage, type WAMessageContent } from 'baileys';
+import { BufferJSON, downloadMediaMessage, getContentType, type WAMessage, type WAMessageContent } from 'baileys';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type GatewayVariables } from '../../auth/middleware.js';
 import { config } from '../../config.js';
-import { createProxyDispatcher } from '../../baileys/proxy.js';
 import { prisma } from '../../db/prisma.js';
 import { id } from '../../ids.js';
 import { logger } from '../../logger.js';
@@ -13,7 +12,6 @@ const app = new Hono<{ Variables: GatewayVariables }>();
 
 // Media downloads hit WhatsApp's CDN directly from this process; route them through
 // the same residential proxy as the socket so no WhatsApp traffic reveals the datacenter IP.
-const mediaProxyDispatcher = config.WA_PROXY_URL ? createProxyDispatcher(config.WA_PROXY_URL) : undefined;
 
 // Message content nodes that carry downloadable media.
 const MEDIA_CONTENT_TYPES = new Set([
@@ -61,8 +59,13 @@ app.get('/v1/accounts/:accountId/messages/:messageId/media', requireAuth({ resou
     buffer = await downloadMediaMessage(
       { ...message, message: content ?? null },
       'buffer',
-      // dispatcher is consumed at runtime by Baileys' fetch call but is absent from its RequestInit type.
-      (mediaProxyDispatcher ? { options: { dispatcher: mediaProxyDispatcher } } : {}) as MediaDownloadOptions,
+      // No dispatcher here on purpose. Baileys downloads via Node's native
+      // fetch, and handing it a dispatcher from the userland undici package
+      // fails with "invalid onRequestStart method" — the two undici copies
+      // disagree on the request-handler contract. The proxy is applied
+      // process-wide via setGlobalDispatcher in main.ts instead, which native
+      // fetch honours (verified in production, streamed bodies included).
+      {},
       { logger, reuploadRequest: () => { throw new Error('media reupload requires an active session'); } },
     );
   } catch (error) {

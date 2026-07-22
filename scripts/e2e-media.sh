@@ -109,17 +109,17 @@ else echo "FAIL: expected 4xx, got $code"; ((FAIL++)); fi
 # Download is a different transport from upload and can fail on its own.
 echo
 echo "media download path"
-printf '  %-34s ' "GET /messages/{id}/media"
+printf '  %-34s ' "GET /accounts/{id}/messages/{id}/media"
 MID="$(api "$WAG_URL/v1/accounts/$WAG_ACCOUNT/messages?limit=25" | python3 -c '
 import sys, json
 try: rows = json.load(sys.stdin).get("data", [])
 except Exception: rows = []
 media = {"imageMessage","videoMessage","documentMessage","audioMessage","stickerMessage"}
-print(next((r["id"] for r in rows if r.get("type") in media), ""))' 2>/dev/null)"
+print(next((r["id"] for r in rows if (r.get("messageType") or r.get("type")) in media), ""))' 2>/dev/null)"
 if [[ -z "$MID" ]]; then
   echo "SKIP (no media message in recent history)"
 else
-  code="$(api -o "$TMP/dl.bin" -w '%{http_code}' "$WAG_URL/v1/messages/$MID/media")"
+  code="$(api -o "$TMP/dl.bin" -w '%{http_code}' "$WAG_URL/v1/accounts/$WAG_ACCOUNT/messages/$MID/media")"
   size=$(wc -c < "$TMP/dl.bin" | tr -d ' ')
   if [[ "$code" == "200" && "$size" -gt 0 ]]; then echo "ok ($size bytes)"; ((PASS++))
   else echo "FAIL: HTTP $code, $size bytes"; ((FAIL++)); fi
