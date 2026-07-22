@@ -89,6 +89,30 @@ app.delete('/v1/webhook-endpoints/:endpointId', requireAuth({ resource: 'webhook
   return context.body(null, 204);
 });
 
+/**
+ * Mint a new signing secret for an existing endpoint, returned once.
+ *
+ * Without this, "refresh the webhook" means delete-and-recreate, which silently
+ * re-pairs the endpoint to a secret the receiver does not have. Every delivery
+ * then fails 401 while looking, from the receiver's side, like the gateway has
+ * simply gone quiet. Rotating in place keeps the endpoint id, its subscriptions
+ * and its delivery history, and makes the one thing that actually changed
+ * explicit.
+ *
+ * Deliveries already queued are signed with the NEW secret when they are next
+ * attempted, so update the receiver promptly.
+ */
+app.post('/v1/webhook-endpoints/:endpointId/rotate-secret', requireAuth({ resource: 'webhooks', action: 'write' }), async (context) => {
+  const actor = context.get('actor');
+  const secret = `whsec_${randomBytes(32).toString('base64url')}`;
+  const result = await prisma.webhookEndpoint.updateMany({
+    where: { id: context.req.param('endpointId'), tenantId: actor.tenantId, ...(actor.accountIds ? { accountIds: { hasSome: actor.accountIds } } : {}) },
+    data: { secret: encryptJson(secret) },
+  });
+  if (!result.count) throw new HTTPException(404, { message: 'Webhook endpoint not found' });
+  return context.json({ id: context.req.param('endpointId'), secret }, 200, { 'cache-control': 'no-store' });
+});
+
 app.get('/v1/webhook-deliveries', requireAuth({ resource: 'webhooks', action: 'read' }), async (context) => {
   const actor = context.get('actor');
   const limit = limitQuery(context.req.query('limit'), 100, 500);

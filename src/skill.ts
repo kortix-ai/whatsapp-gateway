@@ -163,6 +163,7 @@ Convenience aliases remain available for message sending and group operations:
 - \`GET /v1/webhook-endpoints/{endpointId}\`
 - \`PATCH /v1/webhook-endpoints/{endpointId}\`
 - \`DELETE /v1/webhook-endpoints/{endpointId}\`
+- \`POST /v1/webhook-endpoints/{endpointId}/rotate-secret\` — new signing secret, shown once; prefer over delete+recreate
 - \`GET /v1/webhook-deliveries\`
 - \`GET /v1/webhook-deliveries/{deliveryId}\`
 - \`POST /v1/webhook-deliveries/{deliveryId}/replay\`

@@ -346,6 +346,16 @@ export const openApiDocument = {
       },
       delete: { tags: ['Webhooks'], summary: 'Delete a webhook endpoint', parameters: [endpointParameter], responses: { '204': { description: 'Deleted' }, '404': { description: 'Not found' } } },
     },
+    '/v1/webhook-endpoints/{endpointId}/rotate-secret': {
+      post: {
+        tags: ['Webhooks'],
+        summary: 'Mint a new signing secret, returned once',
+        description:
+          'Rotates in place, keeping the endpoint id, its subscriptions and its delivery history. Prefer this over delete-and-recreate, which re-pairs the endpoint to a secret the receiver does not have and fails every delivery with 401. Update the receiver promptly: queued deliveries are signed with the new secret on their next attempt.',
+        parameters: [endpointParameter],
+        responses: { '200': { description: 'New secret, shown once' }, '404': { description: 'Not found' } },
+      },
+    },
     '/v1/webhook-deliveries': {
       get: { tags: ['Webhooks'], summary: 'Filter and paginate webhook deliveries', parameters: [
         { name: 'endpoint_id', in: 'query', schema: { type: 'string' } }, { name: 'account_id', in: 'query', schema: { type: 'string' } },

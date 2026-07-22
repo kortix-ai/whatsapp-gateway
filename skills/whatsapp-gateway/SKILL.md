@@ -32,7 +32,7 @@ Add `q` to `GET /v1/accounts/{accountId}/messages` to full-text search message t
 
 Convenience mutation aliases are `POST /v1/accounts/{accountId}/messages`, `POST /v1/accounts/{accountId}/groups`, `PATCH /v1/accounts/{accountId}/groups/{groupId}`, `POST /v1/accounts/{accountId}/groups/{groupId}/participants`, and `DELETE /v1/accounts/{accountId}/groups/{groupId}/participants/{participantId}`.
 
-Webhook routes are `GET /v1/webhook-event-types`, `GET|POST /v1/webhook-endpoints`, `GET|PATCH|DELETE /v1/webhook-endpoints/{endpointId}`, `GET /v1/webhook-deliveries`, `GET /v1/webhook-deliveries/{deliveryId}`, and `POST /v1/webhook-deliveries/{deliveryId}/replay`.
+Webhook routes are `GET /v1/webhook-event-types`, `GET|POST /v1/webhook-endpoints`, `GET|PATCH|DELETE /v1/webhook-endpoints/{endpointId}`, `POST /v1/webhook-endpoints/{endpointId}/rotate-secret`, `GET /v1/webhook-deliveries`, `GET /v1/webhook-deliveries/{deliveryId}`, and `POST /v1/webhook-deliveries/{deliveryId}/replay`.
 
 Discovery routes are `GET /v1/skill.md`, `GET /v1/capabilities.md`, `GET /openapi.json`, and `GET /docs`.
 

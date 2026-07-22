@@ -39,6 +39,18 @@ export async function claimWebhookDelivery() {
   });
 }
 
+/**
+ * Status codes a receiver will keep rejecting no matter how often we resend:
+ * a bad signature, a revoked endpoint, a URL that is gone. These dead-letter on
+ * the first response instead of consuming a dozen retry slots each.
+ *
+ * Deliberately NOT included: 404 (can flap during a receiver deploy), 408, 429
+ * and every 5xx — those are transient and worth the backoff.
+ */
+export function isPermanentRejection(statusCode: number | undefined): boolean {
+  return statusCode === 401 || statusCode === 403 || statusCode === 410;
+}
+
 export class WebhookDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
@@ -143,10 +155,18 @@ export class WebhookDispatcher {
         });
         return;
       }
-      throw new Error(`Webhook returned HTTP ${response.status}: ${responseBody}`);
+      const failure = new Error(`Webhook returned HTTP ${response.status}: ${responseBody}`);
+      (failure as { statusCode?: number }).statusCode = response.status;
+      throw failure;
     } catch (error) {
       const attempts = delivery.attemptCount;
-      const dead = attempts >= config.WEBHOOK_MAX_ATTEMPTS;
+      const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+      // Retrying a permanent rejection cannot succeed, and the attempts are not
+      // free: they occupy the same bounded worker pool as live traffic. A
+      // secret mismatch once produced 3,854 retrying deliveries that starved
+      // new events into `pending` for an hour — an endpoint the receiver was
+      // rejecting outright took the whole gateway's delivery capacity with it.
+      const dead = attempts >= config.WEBHOOK_MAX_ATTEMPTS || isPermanentRejection(statusCode);
       await prisma.webhookDelivery.update({
         where: { id: delivery.id },
         data: {
@@ -155,7 +175,12 @@ export class WebhookDispatcher {
           lastError: error instanceof Error ? error.message : String(error),
         },
       });
-      logger.warn({ deliveryId: delivery.id, attempts, dead, error }, 'Webhook delivery failed');
+      // `err` (not `error`) so pino's serializer renders the message — this was
+      // logging a bare `{}` and hiding the reason deliveries were failing.
+      logger.warn(
+        { deliveryId: delivery.id, attempts, dead, statusCode, permanent: isPermanentRejection(statusCode), err: error },
+        dead ? 'Webhook delivery dead-lettered' : 'Webhook delivery failed',
+      );
     }
   }
 }
