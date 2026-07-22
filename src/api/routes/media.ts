@@ -2,7 +2,6 @@ import { BufferJSON, downloadMediaMessage, getContentType, type WAMessage, type 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type GatewayVariables } from '../../auth/middleware.js';
-import { config } from '../../config.js';
 import { prisma } from '../../db/prisma.js';
 import { id } from '../../ids.js';
 import { logger } from '../../logger.js';
