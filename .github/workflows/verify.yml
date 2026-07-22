@@ -1,0 +1,40 @@
+# Lint, typecheck, tests, build. Defined once and called from two places:
+#
+#   ci.yml         — pull requests and non-main branches
+#   container.yml  — gates publish/deploy, so a red check cannot reach production
+#
+# It lives in its own reusable workflow because `needs:` only orders jobs WITHIN
+# a workflow. When verify sat in ci.yml and the deploy sat in container.yml, the
+# two ran as independent `on: push` workflows and the deploy did not wait for —
+# or care about — the result. A failing lint (and equally, a failing test) shipped
+# to prod anyway; commit dc873c8 did exactly that.
+name: Verify
+
+on:
+  workflow_call:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm skill:validate
+      - run: pnpm build
+      - run: docker compose -f docker-compose.production.yml config
+        env:
+          DOMAIN: whatsapp.example.com
+          DATABASE_URL: postgresql://whatsapp_gateway:test@postgres:5432/whatsapp_gateway
+          POSTGRES_PASSWORD: test
+          BETTER_AUTH_SECRET: test-test-test-test-test-test-test-test
+          ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

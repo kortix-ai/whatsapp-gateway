@@ -11,7 +11,14 @@ permissions:
   id-token: write
 
 jobs:
+  # The deploy gate. Nothing is built or shipped until lint, typecheck, tests and
+  # build all pass on this exact commit — previously these ran in a separate
+  # workflow that the deploy neither waited for nor consulted.
+  verify:
+    uses: ./.github/workflows/verify.yml
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
