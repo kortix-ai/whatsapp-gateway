@@ -21,6 +21,7 @@ import { emitEvent } from '../services/events.js';
 import { passthroughEvents } from '../services/event-types.js';
 import { createPostgresAuthState } from './auth-state.js';
 import { createProxyAgent, installGlobalProxyDispatcher, redactProxy } from './proxy.js';
+import { describeMessage } from './message-facts.js';
 import { resolveWaVersion } from './wa-version.js';
 import { baileysActions, isBaileysAction } from './actions.js';
 import { resetReconnectBackoff, scheduleReconnect } from '../worker/reconnect.js';
@@ -600,6 +601,14 @@ export class BaileysSession {
       // thumbs-up from someone sending nothing. Give it its own event carrying
       // the emoji and the message it points at; an empty emoji means the
       // reaction was removed.
+      // What actually arrived. `text` stays as-is for compatibility, but only
+      // two WhatsApp shapes carry text — `summary` is always populated, so a
+      // consumer is never handed an empty body with no idea what came in.
+      const facts = describeMessage(message);
+      // System frames and undecryptable placeholders are events, not messages.
+      // Emitting them woke consumers ~880 times in production with nothing to
+      // answer (592 `unknown`, 288 `protocolMessage`).
+      if (!facts.user_content) return;
       const reaction = message.message?.reactionMessage;
       if (reaction) {
         await emitEvent(this.accountId, `${surface}message.reaction.${action}`, {
@@ -630,6 +639,12 @@ export class BaileysSession {
         direction: stored.direction,
         type: stored.messageType,
         text: stored.text,
+        summary: facts.summary,
+        media: facts.media,
+        location: facts.location,
+        contacts: facts.contacts,
+        poll: facts.poll,
+        quoted: facts.quoted,
         mentioned_me: mentionedMe,
         timestamp: stored.messageTimestamp.toISOString(),
       });

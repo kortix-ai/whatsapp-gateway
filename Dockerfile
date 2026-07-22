@@ -1,5 +1,7 @@
 FROM node:22-bookworm-slim AS base
-RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates \
+# ffmpeg transcodes WhatsApp voice notes: they arrive as ogg/opus, which almost
+# no model or audio pipeline accepts as input.
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@8.11.0 --activate
 WORKDIR /app

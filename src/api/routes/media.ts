@@ -5,6 +5,7 @@ import { requireAuth, type GatewayVariables } from '../../auth/middleware.js';
 import { prisma } from '../../db/prisma.js';
 import { id } from '../../ids.js';
 import { logger } from '../../logger.js';
+import { needsTranscode, toMp3, TranscodeError } from '../transcode.js';
 import { accountFor, dispatchCommand } from '../helpers.js';
 
 const app = new Hono<{ Variables: GatewayVariables }>();
@@ -72,8 +73,23 @@ app.get('/v1/accounts/:accountId/messages/:messageId/media', requireAuth({ resou
     throw new HTTPException(502, { message: 'Media could not be downloaded. It may have expired — refresh it with the messages.media.refresh action, then retry.' });
   }
 
-  const mimetype = node?.mimetype?.split(';')[0]?.trim() || 'application/octet-stream';
-  const extension = mimetype.split('/')[1] || 'bin';
+  let mimetype = node?.mimetype?.split(';')[0]?.trim() || 'application/octet-stream';
+  // Voice notes arrive as ogg/opus, which almost nothing downstream can decode —
+  // the practical result being a recipient who downloads a voice message and
+  // asks the sender to type it out. Hand back mp3 unless the caller explicitly
+  // wants the original bytes.
+  if (context.req.query('format') !== 'original' && needsTranscode(node?.mimetype)) {
+    try {
+      buffer = await toMp3(buffer);
+      mimetype = 'audio/mpeg';
+    } catch (error) {
+      // Better to serve the original than nothing: a caller that CAN read opus
+      // still gets its audio, and the failure is visible in the logs.
+      logger.warn({ err: error, messageId: context.req.param('messageId') },
+        error instanceof TranscodeError ? 'Voice note transcode failed, serving original' : 'Transcode error');
+    }
+  }
+  const extension = (mimetype === 'audio/mpeg' ? 'mp3' : mimetype.split('/')[1]) || 'bin';
   const safeName = (node?.fileName || `${contentType.replace('Message', '')}-${context.req.param('messageId')}.${extension}`).replace(/[\r\n"]/g, '');
   const disposition = context.req.query('download') === '1' || contentType.startsWith('document') ? 'attachment' : 'inline';
   return new Response(new Uint8Array(buffer), {
