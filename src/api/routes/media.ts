@@ -8,6 +8,13 @@ import { logger } from '../../logger.js';
 import { needsTranscode, toMp3, TranscodeError } from '../transcode.js';
 import { accountFor, dispatchCommand } from '../helpers.js';
 
+/**
+ * Ceiling for base64 responses. Encoding inflates by ~33% and the whole body is
+ * held in memory as a string, so a large document would cost several times its
+ * own size on the way out. Raw streaming has no such limit.
+ */
+const MAX_BASE64_BYTES = 15 * 1024 * 1024;
+
 const app = new Hono<{ Variables: GatewayVariables }>();
 
 // Media downloads hit WhatsApp's CDN directly from this process; route them through
@@ -91,6 +98,30 @@ app.get('/v1/accounts/:accountId/messages/:messageId/media', requireAuth({ resou
   }
   const extension = (mimetype === 'audio/mpeg' ? 'mp3' : mimetype.split('/')[1]) || 'bin';
   const safeName = (node?.fileName || `${contentType.replace('Message', '')}-${context.req.param('messageId')}.${extension}`).replace(/[\r\n"]/g, '');
+
+  // Base64 for callers that reach this through a JSON tool layer. An agent
+  // invoking the API through an OpenAPI connector receives responses as JSON
+  // strings, and raw bytes do not survive that: every non-UTF-8 sequence is
+  // replaced, so the image it saves is corrupt while every step looks like it
+  // succeeded. Returning base64 makes the transport lossless.
+  if (context.req.query('encoding') === 'base64') {
+    if (buffer.length > MAX_BASE64_BYTES) {
+      throw new HTTPException(413, {
+        message: `Media is ${(buffer.length / 1_000_000).toFixed(1)} MB, too large to base64-encode. Omit encoding=base64 to stream the raw bytes.`,
+      });
+    }
+    const data = buffer.toString('base64');
+    return context.json({
+      message_id: context.req.param('messageId'),
+      mimetype,
+      file_name: safeName,
+      size_bytes: buffer.length,
+      data_base64: data,
+      // Ready to hand straight to anything that renders images.
+      data_url: `data:${mimetype};base64,${data}`,
+    }, 200, { 'cache-control': 'private, max-age=3600' });
+  }
+
   const disposition = context.req.query('download') === '1' || contentType.startsWith('document') ? 'attachment' : 'inline';
   return new Response(new Uint8Array(buffer), {
     status: 200,

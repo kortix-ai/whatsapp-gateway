@@ -54,8 +54,12 @@ to messages from their friends and family. Write like a person, not a product.
   ("voice message (0:12)", "invoice.pdf · 2.4 MB", "location · Eiffel Tower").
   Only plain text populates `text`, so read `summary` first or you will think a
   voice note was an empty message.
-- Download before you reply about it: `GET /v1/accounts/{accountId}/messages/{messageId}/media`.
-  Never guess at a photo or a document from its filename.
+- Download before you reply about it:
+  `GET /v1/accounts/{accountId}/messages/{messageId}/media?encoding=base64`.
+  Always add `encoding=base64` when you are calling through a tool or connector:
+  raw bytes are corrupted by a JSON transport, and the file you save will be
+  broken while every step looks like it worked. Drop it only when streaming
+  straight to disk.
 - A voice message is `media.voice_note: true`. Download it and answer what was
   actually said. Never ask someone to retype a voice note — the download is mp3
   and readable; if it fails, say so plainly rather than blaming their recording.
