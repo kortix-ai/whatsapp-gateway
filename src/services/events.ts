@@ -14,13 +14,19 @@ export type GatewayEvent = {
 
 /**
  * Event types an endpoint may have subscribed to in order to receive `type`.
- * `message.received` / `message.sent` replaced the undirected `message.created`,
- * so endpoints still subscribed to the old name keep matching both.
+ * The directional and group-qualified message events replaced the undirected
+ * `message.created`, so endpoints still subscribed to the old name keep
+ * matching all of them.
  */
+const MESSAGE_CREATED_HEIRS = new Set([
+  'message.received',
+  'message.sent',
+  'group.message.received',
+  'group.message.sent',
+]);
+
 function subscribedTypes(type: string): string[] {
-  return type === 'message.received' || type === 'message.sent'
-    ? [type, 'message.created']
-    : [type];
+  return MESSAGE_CREATED_HEIRS.has(type) ? [type, 'message.created'] : [type];
 }
 
 export async function emitEvent(accountId: string, type: string, data: unknown): Promise<GatewayEvent> {

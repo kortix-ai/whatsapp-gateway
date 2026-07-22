@@ -44,6 +44,31 @@ function normalizeJid(value: string): string {
   return `${digits}@s.whatsapp.net`;
 }
 
+/** WhatsApp group JIDs end in `@g.us`; everything else is a 1:1 chat. */
+export function isGroupJid(jid: string): boolean {
+  return jid.endsWith('@g.us');
+}
+
+/** Drop Baileys' device suffix: `1234:5@s.whatsapp.net` → `1234@s.whatsapp.net`. */
+export function bareJid(jid: string): string {
+  const [user = '', domain = ''] = jid.split('@');
+  return `${user.split(':')[0]}@${domain}`;
+}
+
+/**
+ * JIDs @-mentioned in a message. Baileys hangs `contextInfo` off whichever
+ * content variant the message happens to be, so scan them rather than
+ * enumerating every type.
+ */
+export function mentionedJids(message: WAMessage): string[] {
+  for (const content of Object.values(message.message ?? {})) {
+    const mentioned = (content as { contextInfo?: { mentionedJid?: string[] | null } } | null)
+      ?.contextInfo?.mentionedJid;
+    if (mentioned?.length) return mentioned;
+  }
+  return [];
+}
+
 function unixDate(value: WAMessage['messageTimestamp']): Date {
   if (!value) return new Date();
   const seconds = typeof value === 'number' ? value : Number(value.toString());
@@ -517,7 +542,15 @@ export class BaileysSession {
       update: { payload: json(message), text: messageText(message) },
     });
     if (emit) {
-      await emitEvent(this.accountId, stored.direction === 'inbound' ? 'message.received' : 'message.sent', {
+      const surface = isGroupJid(stored.chatJid) ? 'group.' : '';
+      const action = stored.direction === 'inbound' ? 'received' : 'sent';
+      // Whether this message addresses US. A group can be busy, and "only wake
+      // the agent when spoken to" is the difference between a useful bot and an
+      // expensive one — so it has to be answerable from the payload, without a
+      // turn spent deciding to stay silent.
+      const me = this.socket?.user?.id ? bareJid(this.socket.user.id) : null;
+      const mentionedMe = !!me && mentionedJids(message).some((jid) => bareJid(jid) === me);
+      await emitEvent(this.accountId, `${surface}message.${action}`, {
         id: stored.id,
         whatsapp_message_id: stored.whatsappMessageId,
         chat_jid: stored.chatJid,
@@ -525,6 +558,7 @@ export class BaileysSession {
         direction: stored.direction,
         type: stored.messageType,
         text: stored.text,
+        mentioned_me: mentionedMe,
         timestamp: stored.messageTimestamp.toISOString(),
       });
     }

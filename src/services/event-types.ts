@@ -32,11 +32,23 @@ export const passthroughEvents = {
 const syntheticEvents = [
   'pairing.qr.updated', 'pairing.code.created', 'pairing.expired',
   'connection.opened', 'connection.closed',
-  // `message.received` / `message.sent` split `message.created` by direction so
-  // a subscriber can take inbound only — without that, an agent replying over
-  // the API would be re-triggered by its own outbound message. `message.created`
-  // stays subscribable and matches both (see services/events.ts).
-  'message.created', 'message.received', 'message.sent',
+  // Message events are split along the two axes a consumer actually routes on:
+  //
+  //   direction — `received` vs `sent`. Subscribing to inbound only is what
+  //     makes a reply loop structurally impossible: an agent's own send is
+  //     never delivered back to it. This is a correctness property, so it
+  //     belongs in the subscription, not in a filter a user can forget.
+  //   surface   — a `group.` prefix for @g.us chats. A group is a different
+  //     CONVERSATION, not a flag on a message: it wants its own prompt, its own
+  //     reply etiquette, usually its own agent. Splitting the event type lets a
+  //     consumer bind separate handlers without any conditional, and without
+  //     this gateway having to denormalize a boolean for every routing question
+  //     a downstream filter cannot express.
+  //
+  // `message.created` stays subscribable and matches all four (services/events.ts).
+  'message.created',
+  'message.received', 'message.sent',
+  'group.message.received', 'group.message.sent',
   'message.updated', 'message.deleted',
   'history.synced',
   'chat.updated', 'chat.deleted', 'contact.updated',
