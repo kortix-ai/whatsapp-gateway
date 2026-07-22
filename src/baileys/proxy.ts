@@ -15,10 +15,17 @@ export function createProxyAgent(url: string): Agent {
 }
 
 /**
- * Build an undici dispatcher for fetch-based media transfers (Baileys media
- * upload/download go through undici's `fetch`, which needs a dispatcher, not a
- * node http agent). undici has no native SOCKS dispatcher, so SOCKS proxies fall
- * back to the node http agent path and this returns undefined.
+ * Build an undici dispatcher for Baileys' fetch-based transfers — media
+ * DOWNLOAD and source-URL fetches, passed as `options.dispatcher`.
+ *
+ * Media UPLOAD is deliberately NOT one of these: on Node, Baileys uploads via
+ * the `https` module (to sidestep an undici request-body buffering bug), so it
+ * needs the node Agent from {@link createProxyAgent} instead. Passing a
+ * dispatcher as `fetchAgent` makes every upload host fail with the thoroughly
+ * unhelpful "Media upload failed on all hosts".
+ *
+ * undici has no SOCKS dispatcher, so SOCKS proxies return undefined here and
+ * their fetch-based transfers go out unproxied.
  */
 export function createProxyDispatcher(url: string): Dispatcher | undefined {
   const scheme = new URL(url).protocol.replace(':', '').toLowerCase();

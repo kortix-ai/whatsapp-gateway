@@ -176,10 +176,25 @@ export class BaileysSession {
       this.pairingTimer = setTimeout(() => void this.expirePairing(authState.clear), remainingMs);
       this.pairingTimer.unref();
     }
+    // Baileys reaches the network three different ways, and each wants its own
+    // kind of proxy object. Handing the wrong one over does not fail loudly —
+    // it fails as "Media upload failed on all hosts" after every upload host is
+    // tried, which reads like a WhatsApp outage rather than a config bug.
+    //
+    //   websocket      → `agent`, a node http.Agent
+    //   media UPLOAD   → `fetchAgent`, ALSO a node http.Agent: on Node, Baileys
+    //                    uploads via the https module (it sidesteps an undici
+    //                    body-buffering bug), so an undici dispatcher here is
+    //                    silently unusable.
+    //   media DOWNLOAD → `options.dispatcher`, an undici Dispatcher, because
+    //                    those requests go through global fetch.
     const proxyAgent = config.WA_PROXY_URL ? createProxyAgent(config.WA_PROXY_URL) : undefined;
-    // WS uses the node http agent; media (fetch) prefers the undici dispatcher, falling back
-    // to the http agent for SOCKS. Either way media exits through the same residential IP.
-    const proxyFetch = config.WA_PROXY_URL ? (createProxyDispatcher(config.WA_PROXY_URL) ?? proxyAgent) : undefined;
+    const proxyDispatcher = config.WA_PROXY_URL ? createProxyDispatcher(config.WA_PROXY_URL) : undefined;
+    if (config.WA_PROXY_URL && !proxyDispatcher) {
+      // SOCKS has no undici dispatcher, so fetch-based transfers would exit from
+      // the datacenter IP while the socket exits residential. Say so out loud.
+      this.log.warn('WA_PROXY_URL is SOCKS: media downloads bypass the proxy; use an http(s) proxy to route them');
+    }
     if (config.WA_PROXY_URL) this.log.info({ proxy: redactProxy(config.WA_PROXY_URL) }, 'Routing WhatsApp socket through proxy');
     const browser = config.WA_BROWSER === 'windows' ? Browsers.windows('Chrome')
       : config.WA_BROWSER === 'ubuntu' ? Browsers.ubuntu('Chrome')
@@ -194,7 +209,8 @@ export class BaileysSession {
       syncFullHistory: config.SYNC_FULL_HISTORY,
       generateHighQualityLinkPreview: false,
       ...(config.WA_COUNTRY_CODE ? { countryCode: config.WA_COUNTRY_CODE } : {}),
-      ...(proxyAgent ? { agent: proxyAgent, fetchAgent: proxyFetch as typeof proxyAgent } : {}),
+      ...(proxyAgent ? { agent: proxyAgent, fetchAgent: proxyAgent } : {}),
+      ...(proxyDispatcher ? { options: { dispatcher: proxyDispatcher } as RequestInit } : {}),
       // Serve retry receipts from the persisted message store: when a recipient
       // cannot decrypt one of our sends, Baileys re-encrypts from here — without
       // it the recipient is stuck on "waiting for this message".
