@@ -22,6 +22,40 @@ app.get('/v1/webhook-endpoints', requireAuth({ resource: 'webhooks', action: 're
   return context.json({ data: endpoints });
 });
 
+
+/**
+ * A receiver that verifies signatures can hold exactly ONE secret per URL, so
+ * two endpoints aimed at the same URL are never both usable: whichever secret
+ * the receiver stores, the other endpoint's deliveries fail 401 forever. That is
+ * not hypothetical — it took production down on 2026-07-22, where a second
+ * endpoint for a second number reused one receiver URL and produced 3,653
+ * retrying deliveries that starved live traffic out of the dispatcher pool.
+ *
+ * Refuse the duplicate at creation instead, and say what to do about it. One
+ * number, one endpoint, one receiver URL, one secret.
+ */
+async function assertUrlNotAlreadyRegistered(
+  tenantId: string,
+  url: string,
+  excludeEndpointId?: string,
+): Promise<void> {
+  const normalized = url.replace(/\/+$/, '');
+  const existing = await prisma.webhookEndpoint.findFirst({
+    where: {
+      tenantId,
+      OR: [{ url: normalized }, { url: `${normalized}/` }],
+      ...(excludeEndpointId ? { id: { not: excludeEndpointId } } : {}),
+    },
+    select: { id: true, accountIds: true },
+  });
+  if (!existing) return;
+  throw new HTTPException(409, {
+    message:
+      `Webhook endpoint ${existing.id} already delivers to that URL. A receiver verifies one secret per URL, so a second endpoint on the same URL would fail every delivery with 401. ` +
+      `To cover another connection, give it its own receiver URL and create a separate endpoint; to change which connections this URL receives, PATCH ${existing.id}; to re-issue its secret, POST /v1/webhook-endpoints/${existing.id}/rotate-secret.`,
+  });
+}
+
 app.post('/v1/webhook-endpoints', requireAuth({ resource: 'webhooks', action: 'write' }), async (context) => {
   const input = await body(context, z.object({
     url: z.string().url(), description: z.string().max(200).optional(),
@@ -31,6 +65,7 @@ app.post('/v1/webhook-endpoints', requireAuth({ resource: 'webhooks', action: 'w
   const accountIds = actor.accountIds ?? input.account_ids;
   await Promise.all(accountIds.map((accountId) => accountFor(actor, accountId)));
   await validateWebhookUrl(input.url);
+  await assertUrlNotAlreadyRegistered(actor.tenantId, input.url);
   const secret = `whsec_${randomBytes(32).toString('base64url')}`;
   const endpoint = await prisma.webhookEndpoint.create({
     data: {
@@ -62,7 +97,10 @@ app.patch('/v1/webhook-endpoints/:endpointId', requireAuth({ resource: 'webhooks
     throw new HTTPException(403, { message: 'A connection-scoped key cannot change webhook connection scope' });
   }
   if (input.account_ids) await Promise.all(input.account_ids.map((accountId) => accountFor(actor, accountId)));
-  if (input.url) await validateWebhookUrl(input.url);
+  if (input.url) {
+    await validateWebhookUrl(input.url);
+    await assertUrlNotAlreadyRegistered(actor.tenantId, input.url, context.req.param('endpointId'));
+  }
   const updated = await prisma.webhookEndpoint.updateMany({
     where: { id: context.req.param('endpointId'), tenantId: actor.tenantId, ...(actor.accountIds ? { accountIds: { hasSome: actor.accountIds } } : {}) },
     data: {

@@ -328,7 +328,7 @@ export const openApiDocument = {
           event_types: { type: 'array', items: { type: 'string' }, default: [] },
           account_ids: { type: 'array', items: { type: 'string' }, default: [], description: 'Empty means every tenant connection; connection keys are forced to their assigned connection.' },
         }, ['url'])),
-        responses: { '201': { description: 'Endpoint and one-time signing secret' } },
+        responses: { '409': { description: 'Another endpoint already delivers to that URL' }, '201': { description: 'Endpoint and one-time signing secret' } },
       },
     },
     '/v1/webhook-event-types': {
