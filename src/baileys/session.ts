@@ -379,6 +379,33 @@ export class BaileysSession {
       }
       await emitEvent(this.accountId, 'contact.updated', json(contacts));
     });
+    // Calls. The raw `call` passthrough fires on every status transition
+    // (offer, ringing, preaccept, transport, relaylatency, accept, terminate),
+    // carries Baileys' array shape rather than the gateway envelope, and so
+    // cannot be routed on chat_jid like everything else. Emit the two moments a
+    // consumer actually acts on, in the normal envelope: someone is calling, and
+    // the call is over.
+    this.on(socket, 'call', async (calls) => {
+      for (const call of calls) {
+        const terminal = call.status === 'terminate' || call.status === 'timeout' || call.status === 'reject';
+        if (call.status !== 'offer' && !terminal) continue;
+        await emitEvent(this.accountId, terminal ? 'call.ended' : 'call.received', {
+          id: call.id,
+          chat_jid: call.chatId,
+          caller_jid: call.from,
+          caller_phone: call.callerPn ?? null,
+          is_video: call.isVideo ?? false,
+          is_group: call.isGroup ?? false,
+          group_jid: call.groupJid ?? null,
+          // `offline` means WhatsApp buffered this while we were disconnected —
+          // i.e. it is being replayed, not ringing right now. Answering it as if
+          // it were live would be wrong.
+          offline: call.offline,
+          status: call.status,
+          timestamp: (call.date instanceof Date ? call.date : new Date()).toISOString(),
+        });
+      }
+    });
     this.on(socket, 'messages.upsert', async ({ messages, type }) => {
       for (const message of messages) await this.persistMessage(message, type === 'notify');
     });

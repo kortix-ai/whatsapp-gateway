@@ -55,6 +55,10 @@ const syntheticEvents = [
   // payload carries the emoji and the message it points at.
   'message.reaction.received', 'message.reaction.sent',
   'group.message.reaction.received', 'group.message.reaction.sent',
+  // Incoming calls, in the gateway envelope. The raw `call.updated` passthrough
+  // fires on every status transition and carries Baileys' array shape; these two
+  // are the moments a consumer acts on — it is ringing, and it is over.
+  'call.received', 'call.ended',
   'message.updated', 'message.deleted',
   'history.synced',
   'chat.updated', 'chat.deleted', 'contact.updated',

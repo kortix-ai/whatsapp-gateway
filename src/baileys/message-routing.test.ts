@@ -65,3 +65,31 @@ describe('reactions are routed as reactions, not as empty messages', () => {
     expect(messageText({ message: { conversation: 'hello' } } as never)).toBe('hello');
   });
 });
+
+/**
+ * Call routing. Baileys reports a call as a burst of status transitions; only
+ * two of them are things a consumer acts on — it started ringing, and it is
+ * over. Everything between is transport chatter.
+ */
+describe('call statuses worth waking an agent for', () => {
+  const RINGING = 'offer';
+  const OVER = ['terminate', 'timeout', 'reject'];
+  const NOISE = ['ringing', 'preaccept', 'transport', 'relaylatency', 'accept'];
+
+  const routed = (status: string) =>
+    status === RINGING ? 'call.received' : OVER.includes(status) ? 'call.ended' : null;
+
+  it('announces an incoming call the moment it starts ringing', () => {
+    expect(routed('offer')).toBe('call.received');
+  });
+
+  it('reports the end however it ended', () => {
+    for (const status of OVER) expect(routed(status)).toBe('call.ended');
+  });
+
+  it('stays silent through the transport chatter in between', () => {
+    // A single call emits several of these. Forwarding them would wake the
+    // agent repeatedly for one event.
+    for (const status of NOISE) expect(routed(status)).toBeNull();
+  });
+});
