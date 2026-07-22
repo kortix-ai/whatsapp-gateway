@@ -43,12 +43,42 @@ app.get('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', 
   return context.json({ data: messages, next_before: messages.at(-1)?.messageTimestamp.toISOString() ?? null });
 });
 
+
+/**
+ * Baileys media content, e.g. `{ image: { url }, caption }`. `content` is passed
+ * through as-is because it IS the Baileys shape, but "passed through" must not
+ * mean "unchecked": an empty or whitespace-only url used to reach the socket and
+ * surface as `ENOENT: no such file or directory, open ''` from deep inside the
+ * send, hours later, with nothing pointing back at the caller's typo.
+ *
+ * Reject it here, where the caller is still on the phone and the message can name
+ * the offending field.
+ */
+const MEDIA_KEYS = ['image', 'video', 'audio', 'document', 'sticker', 'ptt'] as const;
+
+function assertUsableMedia(content: Record<string, unknown> | undefined): void {
+  if (!content) return;
+  for (const key of MEDIA_KEYS) {
+    const media = content[key];
+    if (!media || typeof media !== 'object') continue;
+    const source = media as { url?: unknown; stream?: unknown };
+    if ('url' in source) {
+      if (typeof source.url !== 'string' || !source.url.trim()) {
+        throw new HTTPException(400, { message: `content.${key}.url must be a non-empty URL or file path` });
+      }
+    } else if (!('stream' in source) && !Buffer.isBuffer(media)) {
+      throw new HTTPException(400, { message: `content.${key} needs a url, a stream, or a buffer` });
+    }
+  }
+}
+
 app.post('/v1/accounts/:accountId/messages', requireAuth({ resource: 'messages', action: 'send' }), async (context) => {
   const input = await body(context, z.object({
     to: z.string().min(3),
     text: z.string().optional(),
     content: z.record(z.string(), z.unknown()).optional(),
   }).refine((value) => value.text !== undefined || value.content !== undefined, 'text or content is required'));
+  assertUsableMedia(input.content);
   const actor = context.get('actor');
   const account = await accountFor(actor, context.req.param('accountId'));
   return dispatchCommand(context, account, 'message.send', input);

@@ -20,7 +20,7 @@ import { logger } from '../logger.js';
 import { emitEvent } from '../services/events.js';
 import { passthroughEvents } from '../services/event-types.js';
 import { createPostgresAuthState } from './auth-state.js';
-import { createProxyAgent, createProxyDispatcher, redactProxy } from './proxy.js';
+import { createProxyAgent, installGlobalProxyDispatcher, redactProxy } from './proxy.js';
 import { resolveWaVersion } from './wa-version.js';
 import { baileysActions, isBaileysAction } from './actions.js';
 import { resetReconnectBackoff, scheduleReconnect } from '../worker/reconnect.js';
@@ -186,10 +186,18 @@ export class BaileysSession {
     //                    uploads via the https module (it sidesteps an undici
     //                    body-buffering bug), so an undici dispatcher here is
     //                    silently unusable.
-    //   media DOWNLOAD → `options.dispatcher`, an undici Dispatcher, because
-    //                    those requests go through global fetch.
+    //   media DOWNLOAD → global `fetch`, which can only be proxied by
+    //                    setGlobalDispatcher. Baileys does accept an
+    //                    `options.dispatcher`, but Node's global fetch rejects
+    //                    any dispatcher from the userland undici package
+    //                    (UND_ERR_INVALID_ARG → a bare "fetch failed"), so that
+    //                    route is a dead end. See installGlobalProxyDispatcher.
     const proxyAgent = config.WA_PROXY_URL ? createProxyAgent(config.WA_PROXY_URL) : undefined;
-    const proxyDispatcher = config.WA_PROXY_URL ? createProxyDispatcher(config.WA_PROXY_URL) : undefined;
+    // Global, not per-socket — see installGlobalProxyDispatcher for why Baileys'
+    // fetch-based transfers cannot be proxied any other way.
+    const proxyDispatcher = config.WA_PROXY_URL
+      ? installGlobalProxyDispatcher(config.WA_PROXY_URL)
+      : false;
     if (config.WA_PROXY_URL && !proxyDispatcher) {
       // SOCKS has no undici dispatcher, so fetch-based transfers would exit from
       // the datacenter IP while the socket exits residential. Say so out loud.
@@ -210,7 +218,6 @@ export class BaileysSession {
       generateHighQualityLinkPreview: false,
       ...(config.WA_COUNTRY_CODE ? { countryCode: config.WA_COUNTRY_CODE } : {}),
       ...(proxyAgent ? { agent: proxyAgent, fetchAgent: proxyAgent } : {}),
-      ...(proxyDispatcher ? { options: { dispatcher: proxyDispatcher } as RequestInit } : {}),
       // Serve retry receipts from the persisted message store: when a recipient
       // cannot decrypt one of our sends, Baileys re-encrypts from here — without
       // it the recipient is stuck on "waiting for this message".

@@ -1,7 +1,7 @@
 import type { Agent } from 'https';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
-import { ProxyAgent, type Dispatcher } from 'undici';
+import { ProxyAgent, setGlobalDispatcher, type Dispatcher } from 'undici';
 
 /**
  * Build a proxy agent for the WebSocket connection so WhatsApp sees a residential
@@ -31,6 +31,34 @@ export function createProxyDispatcher(url: string): Dispatcher | undefined {
   const scheme = new URL(url).protocol.replace(':', '').toLowerCase();
   if (scheme === 'http' || scheme === 'https') return new ProxyAgent(url);
   return undefined;
+}
+
+let globalDispatcherInstalled = false;
+
+/**
+ * Route Node's GLOBAL `fetch` through the proxy, process-wide.
+ *
+ * This has to be global rather than per-request. Baileys' media download and
+ * source-URL fetches call global `fetch`, and Node's global fetch only accepts
+ * a `dispatcher` built by its OWN bundled undici — one from the userland
+ * `undici` package is a different class and is rejected with
+ * `UND_ERR_INVALID_ARG`, surfacing as a bare "fetch failed". `setGlobalDispatcher`
+ * is the one hook that does apply.
+ *
+ * Safe here because the worker's only global-fetch traffic IS Baileys media;
+ * webhook delivery deliberately uses undici's own `fetch` with its own
+ * SSRF-checked agent (see webhooks/dispatcher.ts), which this cannot affect.
+ *
+ * No-op for SOCKS (undici has no SOCKS dispatcher) and idempotent, so repeated
+ * session starts don't stack dispatchers.
+ */
+export function installGlobalProxyDispatcher(url: string): boolean {
+  if (globalDispatcherInstalled) return true;
+  const dispatcher = createProxyDispatcher(url);
+  if (!dispatcher) return false;
+  setGlobalDispatcher(dispatcher);
+  globalDispatcherInstalled = true;
+  return true;
 }
 
 /** A proxy URL with its credentials stripped, safe to log. */

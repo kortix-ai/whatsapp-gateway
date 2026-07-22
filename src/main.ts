@@ -6,6 +6,26 @@ import { prisma } from './db/prisma.js';
 import { logger } from './logger.js';
 import { startWebhookDispatcher, type WebhookDispatcher } from './webhooks/dispatcher.js';
 import { startWorker, type SessionSupervisor } from './worker/supervisor.js';
+import { installGlobalProxyDispatcher, redactProxy } from './baileys/proxy.js';
+
+// Route global `fetch` through the residential proxy for EVERY role, before any
+// request can be made. Both the worker (Baileys media upload/download) and the
+// API (downloadMediaMessage on GET /messages/:id/media) reach WhatsApp's media
+// CDN this way, and a download that skips the proxy exits from the datacenter IP
+// while the socket sits on a residential one — exactly the mismatch the proxy
+// exists to avoid.
+//
+// Webhook delivery is deliberately unaffected: it passes its own SSRF-checked
+// dispatcher explicitly, and an explicit dispatcher overrides the global one.
+if (config.WA_PROXY_URL) {
+  const proxied = installGlobalProxyDispatcher(config.WA_PROXY_URL);
+  logger.info(
+    { proxy: redactProxy(config.WA_PROXY_URL), role: config.RUNTIME_ROLE, fetchProxied: proxied },
+    proxied
+      ? 'Global fetch routed through proxy'
+      : 'SOCKS proxy: global fetch NOT proxied (undici has no SOCKS dispatcher)',
+  );
+}
 
 let supervisor: SessionSupervisor | undefined;
 let dispatcher: WebhookDispatcher | undefined;
