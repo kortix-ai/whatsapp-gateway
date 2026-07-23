@@ -23,6 +23,8 @@ data "cloudflare_zone" "gateway" {
   name = var.cloudflare_zone
 }
 
+data "cloudflare_ip_ranges" "cloudflare" {}
+
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
@@ -45,6 +47,22 @@ resource "aws_s3_bucket" "backups" {
   bucket = "kortix-whatsapp-gateway-backups-${data.aws_caller_identity.current.account_id}"
 }
 
+resource "aws_kms_key" "backups" {
+  description             = "Encrypt whatsapp-gateway backups"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+
+  tags = {
+    Name    = "whatsapp-gateway-backups"
+    Service = "wag.kortix.cloud"
+  }
+}
+
+resource "aws_kms_alias" "backups" {
+  name          = "alias/whatsapp-gateway-backups"
+  target_key_id = aws_kms_key.backups.key_id
+}
+
 resource "aws_s3_bucket_versioning" "backups" {
   bucket = aws_s3_bucket.backups.id
   versioning_configuration { status = "Enabled" }
@@ -54,8 +72,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "backups" {
   bucket = aws_s3_bucket.backups.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      kms_master_key_id = aws_kms_key.backups.arn
+      sse_algorithm     = "aws:kms"
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -65,6 +85,78 @@ resource "aws_s3_bucket_public_access_block" "backups" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "backups" {
+  bucket = aws_s3_bucket.backups.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource = [
+        aws_s3_bucket.backups.arn,
+        "${aws_s3_bucket.backups.arn}/*",
+      ]
+      Condition = {
+        Bool = { "aws:SecureTransport" = "false" }
+      }
+    }]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.backups]
+}
+
+resource "aws_s3_bucket_policy" "terraform_state" {
+  bucket = "kortix-whatsapp-gateway-tfstate-${data.aws_caller_identity.current.account_id}"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource = [
+        "arn:aws:s3:::kortix-whatsapp-gateway-tfstate-${data.aws_caller_identity.current.account_id}",
+        "arn:aws:s3:::kortix-whatsapp-gateway-tfstate-${data.aws_caller_identity.current.account_id}/*",
+      ]
+      Condition = {
+        Bool = { "aws:SecureTransport" = "false" }
+      }
+    }]
+  })
+}
+
+resource "aws_dynamodb_table" "terraform_locks" {
+  name                        = "kortix-whatsapp-gateway-terraform-locks"
+  billing_mode                = "PAY_PER_REQUEST"
+  hash_key                    = "LockID"
+  deletion_protection_enabled = true
+
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Name    = "kortix-whatsapp-gateway-terraform-locks"
+    Service = "wag.kortix.cloud"
+  }
+}
+
+import {
+  to = aws_dynamodb_table.terraform_locks
+  id = "kortix-whatsapp-gateway-terraform-locks"
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "backups" {
@@ -143,6 +235,11 @@ resource "aws_iam_role_policy" "instance" {
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
         Resource = "${aws_s3_bucket.backups.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource = aws_kms_key.backups.arn
       }
     ]
   })
@@ -159,33 +256,47 @@ resource "aws_security_group" "gateway" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description = "HTTP"
+    description      = "HTTP from Cloudflare"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    cidr_blocks      = data.cloudflare_ip_ranges.cloudflare.ipv4_cidr_blocks
+    ipv6_cidr_blocks = data.cloudflare_ip_ranges.cloudflare.ipv6_cidr_blocks
+  }
+
+  ingress {
+    description      = "HTTPS from Cloudflare"
+    from_port        = 443
+    to_port          = 443
+    protocol         = "tcp"
+    cidr_blocks      = data.cloudflare_ip_ranges.cloudflare.ipv4_cidr_blocks
+    ipv6_cidr_blocks = data.cloudflare_ip_ranges.cloudflare.ipv6_cidr_blocks
+  }
+
+  ingress {
+    description      = "HTTP/3 from Cloudflare"
+    from_port        = 443
+    to_port          = 443
+    protocol         = "udp"
+    cidr_blocks      = data.cloudflare_ip_ranges.cloudflare.ipv4_cidr_blocks
+    ipv6_cidr_blocks = data.cloudflare_ip_ranges.cloudflare.ipv6_cidr_blocks
+  }
+
+  #trivy:ignore:AVD-AWS-0104 The gateway must reach WhatsApp, GHCR, AWS APIs, ACME, and package repositories whose public IP ranges are not stable.
+  egress {
+    description = "HTTPS service dependencies"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  #trivy:ignore:AVD-AWS-0104 Bootstrap package repositories publish changing public IP ranges; limit this exception to TCP port 80.
+  egress {
+    description = "HTTP package repositories"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "HTTP/3"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "udp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
@@ -199,7 +310,7 @@ resource "aws_subnet" "gateway" {
   vpc_id                  = data.aws_vpc.default.id
   availability_zone       = "${var.aws_region}a"
   cidr_block              = "172.31.240.0/20"
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false
   tags                    = { Name = "whatsapp-gateway-public" }
 }
 
