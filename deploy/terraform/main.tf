@@ -299,6 +299,15 @@ resource "aws_security_group" "gateway" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  #trivy:ignore:AVD-AWS-0104 IPRoyal rotates geo.iproyal.com across unpublished proxy IPs; keep the exception limited to its configured TCP port.
+  egress {
+    description = "IPRoyal WhatsApp proxy"
+    from_port   = 12321
+    to_port     = 12321
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 resource "aws_internet_gateway" "gateway" {
