@@ -102,6 +102,10 @@ function QrPanel({
   const remaining = useCountdown(status?.pairing_mode === 'qr' ? status?.pairing_expires_at : null);
   const expired = remaining !== null && remaining <= 0;
   const showQr = qr && !expired;
+  const generating = !expired && (
+    pairQr.isPending
+    || (status?.pairing_mode === 'qr' && !qr && (status.status === 'connecting' || status.status === 'pairing'))
+  );
 
   return (
     <div className="flex flex-col items-center gap-4">
@@ -110,7 +114,7 @@ function QrPanel({
           <img src={qr} alt="WhatsApp linking QR code" className="size-full object-contain" />
         ) : (
           <div className="flex flex-col items-center gap-2 p-6 text-center">
-            {pairQr.isPending ? (
+            {generating ? (
               <>
                 <Spinner className="size-6 text-muted-foreground" />
                 <p className="text-sm text-muted-foreground">Generating a secure QR code…</p>
@@ -145,7 +149,7 @@ function QrPanel({
       <Button
         className="w-full"
         variant={showQr ? 'outline' : 'default'}
-        loading={pairQr.isPending}
+        loading={generating}
         onClick={() => pairQr.mutate()}
       >
         <RefreshCw /> {showQr ? 'Regenerate QR code' : 'Generate QR code'}
