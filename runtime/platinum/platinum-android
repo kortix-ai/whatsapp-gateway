@@ -41,10 +41,14 @@ if [[ -s "$proxy_path" ]]; then
   esac
 fi
 
+# Let the emulator select its supported software backend. The legacy
+# swiftshader_indirect path can segfault in Vulkan teardown after Chrome
+# workloads on headless Linux.
 /opt/android-sdk/emulator/emulator @whatsapp \
   -accel on \
-  -gpu swiftshader_indirect \
+  -gpu software \
   -no-audio \
+  -no-metrics \
   -skip-adb-auth \
   -no-boot-anim \
   -no-snapshot \

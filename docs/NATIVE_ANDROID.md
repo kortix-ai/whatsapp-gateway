@@ -167,11 +167,12 @@ through UiAutomator2. `notifications.list` returns only WhatsApp entries from
 Appium Settings' 100-event active/recent notification buffer. Generic selector
 actions accept `accessibility id`, `id`, `-android uiautomator`, or `xpath`.
 
-`POST /upgrade` replaces only the authenticated controller scripts inside a
-running sandbox, keeps the existing control/VNC credentials and proxy, restarts
-the controller supervisor, and verifies its reported `agent_version`. It does
-not restart Android or copy/alter WhatsApp userdata. Use it to roll new bounded
-actions across an enrolled fleet without cloning phone identities.
+`POST /upgrade` replaces the authenticated controller scripts and the
+next-boot Android launcher inside a running sandbox, keeps the existing
+control/VNC credentials and proxy, restarts the controller supervisor, and
+verifies its reported `agent_version`. It does not restart Android or
+copy/alter WhatsApp userdata. Use it to roll new bounded actions and boot
+hardening across an enrolled fleet without cloning phone identities.
 
 This is the native controller boundary, but it is not a private WhatsApp API.
 WhatsApp UI/resource changes can require selector updates, notifications are

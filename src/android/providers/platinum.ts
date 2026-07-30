@@ -16,6 +16,7 @@ const CONTROL_CONFIG_PATH = '/var/lib/android-control/config.json';
 const CONTROL_SOURCE_PATH = '/usr/local/lib/platinum-android-control/server.mjs';
 const CONTROL_LAUNCHER_PATH = '/usr/local/sbin/platinum-android-control';
 const EXTRA_SERVICES_PATH = '/usr/local/sbin/platinum-extra-services';
+const ANDROID_LAUNCHER_PATH = '/usr/local/sbin/platinum-android';
 const ANDROID_PROXY_PATH = '/var/lib/android-network/http-proxy-url';
 const APPIUM_PORT = 4723;
 
@@ -93,10 +94,11 @@ export class PlatinumAndroidRuntimeProvider implements AndroidRuntimeProvider {
     vncPassword: string,
     proxyUrl: string | undefined,
   ): Promise<void> {
-    const [source, launcher, extraServices] = await Promise.all([
+    const [source, launcher, extraServices, androidLauncher] = await Promise.all([
       readFile(resolve(process.cwd(), 'runtime/android-agent/server.mjs'), 'utf8'),
       readFile(resolve(process.cwd(), 'runtime/platinum/platinum-android-control'), 'utf8'),
       readFile(resolve(process.cwd(), 'runtime/platinum/platinum-extra-services'), 'utf8'),
+      readFile(resolve(process.cwd(), 'runtime/platinum/platinum-android'), 'utf8'),
     ]);
     await checked(sandbox.exec([
       'install',
@@ -111,6 +113,10 @@ export class PlatinumAndroidRuntimeProvider implements AndroidRuntimeProvider {
     await sandbox.files.write(CONTROL_SOURCE_PATH, source);
     await sandbox.files.write(CONTROL_LAUNCHER_PATH, launcher);
     await sandbox.files.write(EXTRA_SERVICES_PATH, extraServices);
+    // Golden snapshots keep their original launcher. Refresh it on every
+    // provision/upgrade so renderer and boot hardening ship independently of
+    // rebuilding the Android userdata image.
+    await sandbox.files.write(ANDROID_LAUNCHER_PATH, androidLauncher);
     await sandbox.files.write(CONTROL_CONFIG_PATH, JSON.stringify({
       token: controlToken,
       port: config.PLATINUM_ANDROID_CONTROL_PORT,
@@ -128,7 +134,7 @@ export class PlatinumAndroidRuntimeProvider implements AndroidRuntimeProvider {
     const bootstrap = `
 set -eu
 install -d -m 700 /var/lib/android-control /var/lib/android-vnc
-chmod 755 ${CONTROL_SOURCE_PATH} ${CONTROL_LAUNCHER_PATH} ${EXTRA_SERVICES_PATH}
+chmod 755 ${CONTROL_SOURCE_PATH} ${CONTROL_LAUNCHER_PATH} ${EXTRA_SERVICES_PATH} ${ANDROID_LAUNCHER_PATH}
 chmod 600 ${CONTROL_CONFIG_PATH}
 if [ -f ${ANDROID_PROXY_PATH} ]; then chmod 600 ${ANDROID_PROXY_PATH}; fi
 x11vnc -storepasswd ${password} /var/lib/android-vnc/passwd >/dev/null

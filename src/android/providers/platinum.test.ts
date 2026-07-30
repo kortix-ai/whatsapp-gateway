@@ -77,6 +77,10 @@ describe('PlatinumAndroidRuntimeProvider', () => {
       '/usr/local/lib/platinum-android-control/server.mjs',
       expect.stringContaining('android_control_listening'),
     );
+    expect(child.files.write).toHaveBeenCalledWith(
+      '/usr/local/sbin/platinum-android',
+      expect.stringContaining('-gpu software'),
+    );
     expect(child.expose).toHaveBeenCalledWith(6080, { public: true });
     expect(child.expose).toHaveBeenCalledWith(8787, { public: false, ttlSeconds: 86_400 });
     expect(result.providerInstanceId).toBe('sbx_child');
@@ -103,6 +107,10 @@ describe('PlatinumAndroidRuntimeProvider', () => {
     expect(child.files.write).toHaveBeenCalledWith(
       '/var/lib/android-control/config.json',
       expect.stringContaining(result.controlToken),
+    );
+    expect(child.files.write).toHaveBeenCalledWith(
+      '/usr/local/sbin/platinum-android',
+      expect.stringContaining('-no-metrics'),
     );
     expect(upgraded.agent_version).toBe('2026-07-28.1');
   });
